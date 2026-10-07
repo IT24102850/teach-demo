@@ -96,14 +96,29 @@ const UNPAID_CLASSES = {
   'Sahan Peiris': 1,
 };
 
-/** Who was away, as a date offset in weeks back from today. */
-const ABSENCES = {
-  'Kasun Perera': [1, 3, 6],
-  'Ravi Fernando': [2],
-  'Tharindu Bandara': [1, 2, 5],
-  'Amaya Jayasinghe': [4],
-  'Hiruni Senanayake': [1, 2],
-  'Yasith Kumara': [3],
+/**
+ * Who was away, counted back through that student's OWN classes: 0 is their
+ * most recent class, 1 the one before it, and so on.
+ *
+ * It has to be per student rather than per week, because a student enrolled in
+ * two classes has two or three a week - marking "week 3" absent would wipe out
+ * every class in it and leave the attendance percentage looking broken.
+ *
+ * The first eight indices are the window the app shows (rule 7.3), so these
+ * numbers decide the P/A string on the parent's screen. The comments give the
+ * string each one produces.
+ */
+const ABSENT_RECENT = {
+  'Kasun Perera': [1, 3, 6, 11, 14],   // PAPPAPAP  -> 63 %
+  'Amaya Jayasinghe': [0, 13],         // PPPPPPPA  -> 88 %
+  'Ravi Fernando': [4, 12],            // PPPAPPPP  -> 88 %
+  'Tharindu Bandara': [1, 4, 6, 10],   // PAPPAPAP  -> 63 %
+  'Hiruni Senanayake': [1, 5, 9],      // PPAPPPAP  -> 75 %
+  'Yasith Kumara': [2, 11],            // PPPPPAPP  -> 88 %
+  'Pasindu Rathnayake': [2, 5, 15],    // PPAPPAPP  -> 75 %
+  'Thisara Mendis': [3],               // PPPPAPPP  -> 88 %
+  'Sahan Peiris': [6],                 // PAPPPPPP  -> 88 %
+  // Dilini Silva and the rest have a clean record: 100 %.
 };
 
 const MARKS = {
@@ -278,15 +293,35 @@ async function main() {
   const sessionRows = await db.insert('sessions', sessions);
 
   const classOf = Object.fromEntries(classRows.map((c, i) => [c.id, i]));
+
+  // Each student's own classes, oldest first, so an absence can be placed at a
+  // known distance from their latest class.
+  const mine = {};
+  for (const session of sessionRows) {
+    for (const name of CLASSES[classOf[session.class_id]][7]) {
+      (mine[name] = mine[name] || []).push(session);
+    }
+  }
+  const absentSessions = {};
+  for (const [name, list] of Object.entries(mine)) {
+    list.sort((a, b) => a.session_date.localeCompare(b.session_date));
+    absentSessions[name] = new Set(
+      (ABSENT_RECENT[name] || [])
+        .map((back) => list[list.length - 1 - back])
+        .filter(Boolean)
+        .map((s) => s.id),
+    );
+  }
+
   const attendance = [];
   const charges = [];
   for (const session of sessionRows) {
     const names = CLASSES[classOf[session.class_id]][7];
-    const weeksBack = Math.ceil((Date.parse(TODAY) - Date.parse(session.session_date)) / (7 * 864e5));
     for (const name of names) {
       const student = byName[name];
-      const away = (ABSENCES[name] || []).includes(weeksBack);
+      const away = absentSessions[name].has(session.id);
       attendance.push({ session_id: session.id, student_id: student.id, present: !away });
+      // Rule 7.2.2: a student who was away is not charged for that class.
       if (!away) {
         charges.push({
           teacher_id: tid,
@@ -435,7 +470,7 @@ async function main() {
 
   /* ------------------------------------------------------------- summary -- */
   const dues = await db.select('v_students', {
-    select: 'name,amount_due,pending_classes,days_late',
+    select: 'name,amount_due,pending_classes,days_late,hist,avg_pct,total_classes,present_classes',
     teacher_id: `eq.${tid}`,
     order: 'days_late.desc',
   });
@@ -456,6 +491,16 @@ async function main() {
     console.log(
       `   ${s.name.padEnd(24)} ${String(s.pending_classes).padStart(2)} classes  ` +
         `LKR ${String(Math.round(s.amount_due)).padStart(6)}  ${s.days_late} days late`,
+    );
+  }
+  console.log('\n  Attendance (the last 8 classes, oldest first)');
+  for (const s of [...dues].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!s.hist) continue;
+    const pct = Math.round(([...s.hist].filter((c) => c === 'P').length / s.hist.length) * 100);
+    console.log(
+      `   ${s.name.padEnd(24)} ${s.hist.padEnd(9)} ${String(pct).padStart(3)}%` +
+        `   lifetime ${s.present_classes}/${s.total_classes}` +
+        `${s.avg_pct ? `   avg mark ${s.avg_pct}%` : ''}`,
     );
   }
   console.log('\nDone. Set DEMO_HINT=1 to show the codes on the login screen.\n');

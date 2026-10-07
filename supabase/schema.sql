@@ -67,7 +67,11 @@ create table if not exists classes (
   once_date       date,                                    -- set => single session
   active          boolean     not null default true,
   created_at      timestamptz not null default now(),
-  constraint classes_repeat_ck check (once_date is not null or array_length(days,1) >= 1)
+  -- coalesce matters: array_length('{}', 1) is NULL, not 0, and a CHECK that
+  -- evaluates to NULL passes. Without it a class with no weekday and no single
+  -- date would be stored and then never appear on any calendar.
+  constraint classes_repeat_ck
+    check (once_date is not null or coalesce(array_length(days, 1), 0) >= 1)
 );
 create index if not exists classes_teacher_idx on classes(teacher_id, active);
 
@@ -239,6 +243,20 @@ create table if not exists login_attempts (
   created_at timestamptz not null default now()
 );
 create index if not exists login_attempts_ip_idx on login_attempts(ip, created_at desc);
+
+
+-- ===========================================================================
+--  Bringing an older database up to date.
+--  `create table if not exists` leaves an existing table alone, so changes to
+--  a constraint have to be applied explicitly. Each block here is safe to run
+--  any number of times.
+-- ===========================================================================
+
+-- A class with an empty days array and no once_date used to slip through,
+-- because array_length('{}', 1) is NULL and a NULL check passes.
+alter table classes drop constraint if exists classes_repeat_ck;
+alter table classes add  constraint classes_repeat_ck
+  check (once_date is not null or coalesce(array_length(days, 1), 0) >= 1);
 
 
 -- ===========================================================================
