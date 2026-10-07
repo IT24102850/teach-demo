@@ -1,0 +1,66 @@
+/**
+ * Talking to /api. The session lives in an HttpOnly cookie, so there is no
+ * token to keep here and nothing sensitive in localStorage.
+ */
+
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function call(path, { method = 'GET', body } = {}) {
+  let res;
+  try {
+    res = await fetch(`/api/${path}`, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      credentials: 'same-origin',
+    });
+  } catch {
+    throw new ApiError('No connection. Check your internet and try again.', 0);
+  }
+  const text = await res.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { error: text };
+    }
+  }
+  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status);
+  return data;
+}
+
+const get = (path) => call(path);
+const post = (path, body) => call(path, { method: 'POST', body });
+
+export const api = {
+  ApiError,
+
+  /* auth */
+  config: () => get('auth?r=config'),
+  me: () => get('auth?r=me'),
+  login: (role, code) => post('auth?r=login', { role, code }),
+  logout: () => post('auth?r=logout', {}),
+  switchRole: (role) => post('auth?r=role', { role }),
+
+  /* teacher */
+  teacherBootstrap: () => get('teacher?r=bootstrap'),
+  teacherSessions: (from, to) => get(`teacher?r=sessions&from=${from}&to=${to}`),
+  teacherInvite: () => get('teacher?r=invite'),
+  teacherPreview: (kind, studentId) => get(`teacher?r=preview&kind=${kind}&student_id=${studentId}`),
+  slipUrl: (studentId) => get(`teacher?r=slip&student_id=${studentId}`),
+  teacherDo: (action, body) => post(`teacher?r=${action}`, body || {}),
+
+  /* family */
+  familyBootstrap: (childId) => get(`family?r=bootstrap${childId ? `&child_id=${childId}` : ''}`),
+  familyDo: (action, body) => post(`family?r=${action}`, body || {}),
+
+  /* public */
+  joinConfig: (key) => get(`join?r=config&t=${encodeURIComponent(key)}`),
+  joinSubmit: (body) => post('join?r=submit', body),
+};

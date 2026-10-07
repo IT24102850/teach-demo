@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Plus · Teacher App</title>
+    <meta
+      name="description"
+      content="Timetable, one-tap attendance, fees and parent updates for private tuition teachers."
+    />
+    <meta name="theme-color" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/assets/icon-192.png" />
+    <link rel="apple-touch-icon" href="/assets/icon-192.png" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Anton&family=Manrope:wght@500;700;800&family=Noto+Sans+Tamil:wght@500;700;800&display=swap"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#scr">Skip to content</a>
+    <div class="phone">
+      <main id="scr" tabindex="-1"></main>
+      <nav id="nav" aria-label="Main"></nav>
+    </div>
+    <div id="sheet"></div>
+    <div id="toast" aria-live="polite"></div>
+    <noscript>
+      <p style="padding: 24px; color: #fff">This app needs JavaScript switched on.</p>
+    </noscript>
+    <script type="module" src="/app/main.js"></script>
+  </body>
+</html>

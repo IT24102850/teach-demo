@@ -1,0 +1,11 @@
+# Only the app itself needs to be deployed. Everything below is for working on
+# it, and serving it would leak the schema and the tooling for no benefit.
+.env
+.env.*
+!.env.example
+tests
+scripts
+supabase
+node_modules
+*.log
+*.bak

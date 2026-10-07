@@ -1,0 +1,604 @@
+# Plus — Teacher App
+
+Timetable, one-tap attendance, fee tracking and automatic parent updates for
+private tuition teachers. One system, three views: **Teacher**, **Parent** and
+**Student**.
+
+Built from the *Plus Teacher App* build guide. This is the working version: a
+real PostgreSQL database, server-checked logins, a money ledger, real WhatsApp
+sending and a scheduled job for fee reminders.
+
+```
+Browser (PWA)  ──►  /api/* on Vercel  ──►  Supabase PostgreSQL + Storage
+   static files        serverless            row level security on,
+   no build step       service role          anon key can read nothing
+```
+
+---
+
+## Table of contents
+
+1. [What works](#1-what-works)
+2. [Set it up (30 minutes)](#2-set-it-up-30-minutes)
+3. [Deploy to Vercel](#3-deploy-to-vercel)
+4. [Run it locally](#4-run-it-locally)
+5. [How it is put together](#5-how-it-is-put-together)
+6. [The database](#6-the-database)
+7. [Security](#7-security)
+8. [WhatsApp](#8-whatsapp)
+9. [The scheduled job](#9-the-scheduled-job)
+10. [Tests](#10-tests)
+11. [Environment variables](#11-environment-variables)
+12. [Decisions and known limits](#12-decisions-and-known-limits)
+
+---
+
+## 1. What works
+
+**Teacher** — Today's classes · Day/Week/Month calendar on an hour grid with a
+now-line and side-by-side overlapping classes · recurring and one-off classes ·
+cancel a single day · one-tap attendance (everyone present, tap the absent) ·
+fee ledger with FIFO allocation, days late, part-payments, cash/bank, bank-slip
+confirmation · marks and progress reports · income dashboard by day/week/month
+with per-class breakdown · test-paper shop with profit · sign-up links and
+family codes · English/Tamil · Night/Day/Auto.
+
+**Parent** — next class · attendance with the last eight results · average mark ·
+rank · progress chart · leaderboard (masked) · amount due with days late · send
+a bank-slip photo · payment history · ask to reschedule · the teacher's updates
+feed · switch between children on one code · switch to the Student view.
+
+**Student** — up next · streak, average, present % · 90 % attendance goal ·
+this week's classes · every mark with a chart · practice papers via signed links.
+
+**Public** — a sign-up form at `/join?t=<key>` that needs no login.
+
+Everything a teacher does writes an event, which is what the family sees and
+what gets sent to WhatsApp.
+
+---
+
+## 2. Set it up (30 minutes)
+
+You need a free [Supabase](https://supabase.com) project and a free
+[Vercel](https://vercel.com) account. Nothing else — the app has **no npm
+dependencies** and no build step.
+
+### Step 1 · Create the Supabase project
+
+1. Go to [supabase.com/dashboard](https://supabase.com/dashboard) → **New project**.
+2. Pick a region near your users (for Sri Lanka, Singapore or Mumbai).
+3. Wait for it to finish starting.
+
+### Step 2 · Create the tables
+
+Either paste it in, or push it from the command line.
+
+**By hand:** open **SQL Editor** → **New query**, paste the whole of
+[`supabase/schema.sql`](supabase/schema.sql) and press **Run**.
+
+**From the command line:** put the **Session pooler** URL from
+**Connect → Session pooler** into `.env` as `DATABASE_URL`, then:
+
+```bash
+npm run db:push       # applies schema.sql as one transaction
+npm run db:verify     # checks the rules against the real database
+```
+
+Use the *session pooler* URL, not the direct one: `db.<ref>.supabase.co` has
+only an AAAA record, so a network without IPv6 cannot reach it at all.
+
+Either way you get every table, the views that hold the business rules, the two
+transactional functions, the two private storage buckets, and row level
+security switched on. Both are safe to run again later — `db:push` sends the
+file as a single implicit transaction, so a failure changes nothing.
+
+### Step 3 · Collect your keys
+
+**Project Settings → API**:
+
+| You need | Where |
+| --- | --- |
+| Project URL | *Project URL* |
+| `service_role` key | *Project API keys* → `service_role`, **secret** |
+
+> The `service_role` key bypasses every access rule. It belongs only in your
+> `.env` and in Vercel's environment variables — never in the browser, never in
+> a commit.
+
+### Step 4 · Write your `.env`
+
+```bash
+cp .env.example .env
+```
+
+Fill in `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, then generate the two
+secrets:
+
+```bash
+node -e "console.log('SESSION_SECRET=' + require('crypto').randomBytes(32).toString('hex'))"
+node -e "console.log('LOGIN_PEPPER='   + require('crypto').randomBytes(32).toString('hex'))"
+```
+
+`LOGIN_PEPPER` is part of how login codes are hashed. **If you change it, every
+existing code stops working** — keep the same value for the life of the
+deployment.
+
+### Step 5 · Add the demo data
+
+```bash
+npm run seed
+```
+
+It prints the login codes it created:
+
+```
+  Teacher          1234   (Nimal Sir)
+  Parent/Student   3333   (Perera family: Kasun Perera)
+  Parent/Student   4444   (Jayasinghe family: Amaya Jayasinghe)
+  Parent/Student   5555   (Silva family: Dilini Silva, Nimali Silva)
+  ...
+```
+
+`npm run seed:fresh` rebuilds it from scratch.
+
+The seed is not a set of pretty numbers: it generates eight weeks of real
+history — one session row per past class, one attendance row per student, one
+charge per student who was present, then payments on top. Every total you see
+is calculated from that ledger, exactly as it will be with real students.
+
+### Step 6 · Your own teacher account
+
+When you are ready to stop using the demo:
+
+```sql
+-- in the Supabase SQL editor
+insert into teachers (name, title, phone, join_key, subjects, curricula)
+values ('Your Name', 'Sir', '9477xxxxxxx', 'yourkey',
+        '{Maths,Science}', '{Local,Cambridge}');
+```
+
+Then give yourself a code:
+
+```bash
+npm run set-code -- teacher yourkey 1234
+```
+
+Use the same command when a family loses their code:
+
+```bash
+npm run set-code -- family "Kasun Perera" 482915
+```
+
+---
+
+## 3. Deploy to Vercel
+
+```bash
+npm i -g vercel        # if you do not have it
+vercel login
+```
+
+### Add the environment variables
+
+```bash
+for k in SUPABASE_URL SUPABASE_SERVICE_KEY SESSION_SECRET LOGIN_PEPPER \
+         APP_TIMEZONE CODE_LENGTH CRON_SECRET; do
+  vercel env add "$k" production
+done
+```
+
+Or paste them in the dashboard: **Project → Settings → Environment Variables**.
+Add them to **Production**, **Preview** and **Development**.
+
+| Variable | Needed? |
+| --- | --- |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | yes — nothing works without them |
+| `SESSION_SECRET`, `LOGIN_PEPPER` | yes — logins fail without them |
+| `APP_URL` | yes, for the sign-up link (set it to your deployment URL) |
+| `APP_TIMEZONE` | recommended (`Asia/Colombo`) |
+| `CRON_SECRET` | recommended — stops anyone calling `/api/cron` |
+| `CODE_LENGTH` | set to `6` for real use (see §12) |
+| `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID` | optional (see §8) |
+| `DEMO_HINT` | only while demoing — shows the codes on the login screen |
+
+### Ship it
+
+```bash
+vercel          # preview deployment
+vercel --prod   # production
+```
+
+There is no build step, so a deploy takes seconds. Then open the URL, tap
+**Teacher**, and type your code.
+
+**Install it on a phone:** open the URL in Chrome or Safari and choose *Add to
+Home Screen*. It then opens full-screen and works offline for the shell.
+
+---
+
+## 4. Run it locally
+
+```bash
+node --env-file=.env scripts/dev-server.mjs
+# → http://localhost:3000
+```
+
+A small Node server that serves the static files and routes `/api/*` to the
+same handlers Vercel runs. `vercel dev` works too, if you prefer.
+
+---
+
+## 5. How it is put together
+
+```
+index.html            the app shell
+join.html             the public sign-up form
+style.css             the design system: colours, type, components
+sw.js                 service worker (offline shell; never caches /api)
+manifest.json         installable PWA
+
+app/                  the browser (ES modules, no bundler)
+  main.js             boot, routing, one render(), one click listener
+  api.js              the only place that talks to /api
+  state.js            client state; language and theme persist, nothing else
+  rules.js            section 7 business rules, for the screens
+  i18n.js             en + ta dictionaries
+  ui.js               the components of section 5.3
+  join.js             the sign-up form
+  screens/
+    login.js          role picker + PIN pad
+    teacher.js        Today, calendar, students, fees, dashboard, papers
+    teacher-forms.js  every teacher sheet and write
+    family.js         Parent and Student views
+
+api/                  5 serverless functions, routed by ?r=<resource>
+  auth.js             login, logout, me, switch child, switch view
+  teacher.js          everything the teacher's tabs read and write
+  family.js           everything the parent and student read; slip upload
+  join.js             public sign-up
+  cron.js             the daily jobs
+  _lib/
+    db.js             PostgREST + Storage over fetch (holds the service key)
+    session.js        code hashing, HMAC session cookies
+    rules.js          the same business rules, server side
+    templates.js      message wording (en + ta)
+    whatsapp.js       Cloud API, with a wa.me fallback
+    http.js           json, body parsing, error guard
+
+supabase/schema.sql   tables, views, functions, RLS, buckets
+scripts/
+  pg.mjs              a 300-line PostgreSQL client (migrations only)
+  db-push.mjs         applies supabase/schema.sql
+  db-verify.mjs       asserts the SQL rules against a real database
+  seed.mjs            demo teacher, students and eight weeks of history
+  set-code.mjs        sets or resets a login code
+  dev-server.mjs      runs the app locally without Vercel
+tests/                140 tests, no database needed
+```
+
+**Why five functions, not thirty.** Vercel's free plan allows 12 serverless
+functions per deployment. Each file routes internally on `?r=`, which keeps the
+whole API inside the budget with room to spare. A test asserts this.
+
+**Why no framework.** There is nothing to install, nothing to build and nothing
+to upgrade; a deploy is a file copy. The screens are small functions that
+return HTML, so the structure of the build guide maps straight onto the code.
+If you later want React, `app/rules.js` and the API are already independent of
+the rendering.
+
+### How a write works
+
+Every write goes to the server, and the browser then reloads its data rather
+than guessing:
+
+```
+tap "Done" on attendance
+   → POST /api/teacher?r=attendance.finish   { class_id, date, absent[] }
+       → finish_class(...)        one statement: session + attendance + charges
+       → one WhatsApp per absent student, with the result on the event row
+   → GET /api/teacher?r=bootstrap            fresh numbers
+   → render()
+```
+
+So the amount owed on screen is the amount the database would calculate — the
+teacher's phone, the parent's phone and the dashboard cannot drift apart.
+
+---
+
+## 6. The database
+
+### The money ledger
+
+The prototype stored `owed = number of unpaid classes` and multiplied by the
+current fee. That breaks the moment a fee changes or a class is cancelled. Here
+money is a ledger:
+
+* **`charges`** — one row per class a student actually attended, with the fee
+  **as it was on that day**.
+* **`payments`** — one row per payment.
+* **Amount owed** = `sum(charges) − sum(payments)`.
+
+Payments are allocated to charges oldest-first, which is what gives both the
+number of pending classes and "32 days late" (the date of the oldest charge
+still not covered). The `student_dues` view does this in SQL with a window
+function, so every screen reads the same answer.
+
+### Generated sessions
+
+A class is stored once — its weekdays, start time and start date. The dated
+sessions are generated on demand by `sessionsOn(date)`, so nothing has to be
+created every week and a class added today immediately appears on every view.
+A `sessions` row is written **only when something happens**: the class was
+marked, or the parents were reminded. `class_exceptions` holds a single
+cancelled day.
+
+### Views carry the rules
+
+| View | What it answers |
+| --- | --- |
+| `student_dues` | amount due, pending classes, days late |
+| `student_history` | the last 8 results as `PPAPPAPA` |
+| `student_attendance_totals` | lifetime attended / total |
+| `student_marks_summary` | average, best, first and latest percentage |
+| `v_students` | one row per student with all of the above |
+| `teacher_months` | collected vs charged per month, from the ledger |
+
+### Transactional writes
+
+| Function | Why it is in the database |
+| --- | --- |
+| `finish_class` | the session, every attendance row and every charge must land together, or not at all |
+| `record_payment` | works out the amount from the oldest unpaid charges, caps it at what is owed, and clears the slip when nothing is left |
+
+---
+
+## 7. Security
+
+**The browser cannot reach the database.** Row level security is on for every
+table and **no policy grants the anon key anything**, plus the grants are
+revoked outright. Only the serverless functions hold the `service_role` key.
+A test asserts that nothing under `app/` imports the database client.
+
+**Every query is scoped by the session, never by the request.** The signed
+cookie carries the teacher id, or the exact list of child ids a family may
+read. Changing an id in the address bar reaches nothing.
+
+**Login codes are never stored.** Each account keeps a random salt and
+`scrypt(code, salt + LOGIN_PEPPER)`, plus an HMAC digest for an indexed lookup.
+A code cannot be read back — which is why a lost code is *replaced*, not looked
+up, and why the teacher's screen shows "Send a new family code" rather than the
+code itself. A new code is shown once, on screen, and sent on WhatsApp.
+
+**Logins are rate limited.** Failed attempts are counted per IP and the
+endpoint refuses after `LOGIN_MAX_ATTEMPTS` (8) within
+`LOGIN_WINDOW_MINUTES` (15). The sign-up form is capped per IP per hour.
+
+**Sessions** are HMAC-SHA256 signed, stored in an `HttpOnly`, `SameSite=Lax`,
+`Secure` cookie, and expire after 30 days. There is no token in JavaScript.
+
+**A parent never receives another child's surname.** The leaderboard is masked
+on the server — `Amaya Jayasinghe` leaves as `Amaya J.`, and other children's
+ids are stripped. A test checks the payload.
+
+**Files are private.** Bank slips and papers live in private Storage buckets
+and are served through signed URLs that expire in minutes.
+
+**Headers.** A Content-Security-Policy that allows scripts only from the app's
+own origin, plus `nosniff`, `X-Frame-Options: DENY` and a strict referrer
+policy — see [`vercel.json`](vercel.json).
+
+**Children's data.** This holds names, phone numbers and exam results of
+minors. Collect consent, keep access to the family and their teacher, and check
+Sri Lanka's Personal Data Protection Act before going live.
+
+---
+
+## 8. WhatsApp
+
+**Without any configuration** the app still works end to end: the server builds
+the message, records the event, and hands back a `wa.me` link. The teacher taps
+once and their own WhatsApp opens with the text ready. Nothing is silently
+lost — the event row says `manual`.
+
+**With the Cloud API** (`WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID`) the message is
+sent from the server and the event row says `sent`, or `failed` with the reason.
+
+Meta requires an **approved template** for a message that starts a conversation
+outside the 24-hour customer-service window. Free text only works as a reply.
+So: get your templates approved for class reminders, absence alerts and fee
+reminders; until then the `wa.me` fallback covers everything. Check Meta's
+current pricing and rules — they change.
+
+Wording for every message is in [`api/_lib/templates.js`](api/_lib/templates.js),
+in English and Tamil.
+
+---
+
+## 9. The scheduled job
+
+`vercel.json` runs `/api/cron` once a day at 02:00 UTC:
+
+1. **Auto fee reminders** — for each teacher who has them switched on, every
+   student later than that teacher's "remind after" setting (7, 14 or 30 days)
+   gets one reminder, and not another until the period passes again.
+2. **Tomorrow's class reminders** — one message per family per class, recorded
+   on the session so it is never sent twice.
+3. Old rate-limit rows are cleared.
+
+Set `CRON_SECRET` and Vercel sends it as `Authorization: Bearer …`; the function
+refuses anything else. You can run the jobs by hand:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://your-app.vercel.app/api/cron
+curl -H "Authorization: Bearer $CRON_SECRET" "https://your-app.vercel.app/api/cron?job=fees"
+```
+
+Vercel's free plan allows one cron run per day. For reminders that go out at a
+set local hour, move to a paid plan or trigger it from any external scheduler.
+
+---
+
+## 10. Tests
+
+```bash
+npm test
+```
+
+140 tests, no database and no network. They cover the checklist in section 11 of
+the build guide, plus the handlers and every screen:
+
+* **Calendar** — weekly classes on the right days only, not before the start
+  date; one-off classes once; a cancelled day gone and the others intact;
+  Monday-first weeks and month grids; overlapping classes in side-by-side
+  columns.
+* **Money** — 4 × LKR 1,500 = LKR 6,000, and paying 2 leaves 3,000; income
+  ignores absent students; a planned class counts as "still to teach"; paper
+  profit = revenue − cost.
+* **Attendance** — attendance % over the last eight results; streaks; "at risk"
+  = two absences in the last four.
+* **Marks** — 74 % teal, 75 % green, 49 % pink; percentages of any maximum;
+  progress = latest − first.
+* **Leaderboard** — ties broken by streak then alphabetically; only students
+  with marks on the marks board; **no other child's surname or id in the
+  payload**.
+* **Login** — codes hashed and salted; the same code gives different hashes;
+  the lookup digest does not contain the code.
+* **Dates** — month ends and leap days; the server and the browser agree.
+* **Wiring** — every button has a handler; every `t()` key exists in English
+  *and* Tamil; Tamil labels are short enough for a pill; the service worker
+  caches every module the page loads; the API stays inside Vercel's function
+  budget; nothing in `app/` can reach the service key.
+* **Screens** (`render.test.js`) — every screen of all three views renders from
+  fixture data, in English and Tamil, and the HTML carries no `undefined`,
+  `NaN` or `[object Object]`. A student called `O'Brien <script>` is escaped,
+  not executed. Checks the real numbers too: the week view draws seven columns,
+  the month view 42 days, a cancelled day is gone, attendance starts with
+  everyone present, fees sort by days late, the dashboard adds up.
+* **API** (`api.test.js`) — the handlers run against a stubbed Supabase that
+  records every request: wrong codes refused and rate-limited, a parent cookie
+  rejected by the teacher API and vice versa, a tampered cookie rejected,
+  **every bootstrap query asserted to be scoped to the signed-in teacher**,
+  another family's child unreachable, the leaderboard masked before it leaves,
+  a slip rejected unless it is really an image, `finish_class` called with the
+  teacher id from the session, one absence event per absent student, payments
+  capped at what is owed, the fee-reminder preview byte-identical to what is
+  sent, and the cron job refusing a caller without `CRON_SECRET`.
+
+### The SQL
+
+`npm test` covers the JavaScript. The money rules also live in SQL views and
+functions, and only PostgreSQL can judge those, so they have their own check:
+
+```bash
+npm run db:verify
+```
+
+It inserts a fixture, asserts every rule against it, and **rolls the whole
+thing back** — safe to run against a database with real data in it. It checks:
+
+* every table, view, function and storage bucket exists;
+* RLS is on for every table, there are no policies, and `anon` /
+  `authenticated` hold no grants at all;
+* 4 × LKR 1,500 with a LKR 3,000 payment leaves 2 pending classes, LKR 3,000
+  owed, and dates "days late" from the third charge — in the teacher's
+  timezone;
+* a student with no charges still appears, owing nothing;
+* `finish_class` charges only the students who were present, at each one's own
+  fee, and running it twice does not double the money;
+* `record_payment` takes the oldest unpaid classes at the fee they were charged
+  at, clips an over-payment to the balance, raises when nothing is owed, and
+  clears the slip and the reminder note once the balance is clear;
+* both functions refuse another teacher's class or student;
+* the attendance window is the last eight *marked* classes, oldest first, with
+  planned sessions excluded;
+* a mark is a percentage of its own maximum (34/50 counts as 68 %);
+* the monthly totals come from the ledger;
+* a class cannot be charged to the same student twice, a class must either
+  repeat or have a single date, and deleting a teacher cascades.
+
+It needs `DATABASE_URL`; [`scripts/pg.mjs`](scripts/pg.mjs) is a small
+PostgreSQL client (TLS, SCRAM-SHA-256, simple queries) written for this, so
+there is still no npm dependency anywhere in the project.
+
+---
+
+## 11. Environment variables
+
+| Name | Default | What it does |
+| --- | --- | --- |
+| `SUPABASE_URL` | — | **Required.** Project URL. |
+| `SUPABASE_SERVICE_KEY` | — | **Required.** `service_role` key. Server only. |
+| `SESSION_SECRET` | — | **Required.** Signs the session cookie. |
+| `LOGIN_PEPPER` | `SESSION_SECRET` | Hashes login codes. Changing it invalidates every code. |
+| `APP_URL` | the request host | Base URL used in the sign-up link. |
+| `APP_TIMEZONE` | `Asia/Colombo` | The day the server calls "today". |
+| `CODE_LENGTH` | `4` | Digits in a generated family code. Use `6`. |
+| `LOGIN_MAX_ATTEMPTS` | `8` | Failed logins per IP before lock-out. |
+| `LOGIN_WINDOW_MINUTES` | `15` | The lock-out window. |
+| `JOIN_MAX_PER_HOUR` | `5` | Sign-up submissions per IP per hour. |
+| `DEMO_HINT` | off | Shows the demo codes on the login screen. |
+| `CRON_SECRET` | — | Protects `/api/cron`. |
+| `WHATSAPP_TOKEN` | — | Cloud API token. Without it, the `wa.me` fallback. |
+| `WHATSAPP_PHONE_ID` | — | Cloud API phone number id. |
+| `WHATSAPP_API_VERSION` | `v21.0` | Graph API version. |
+| `DATABASE_URL` | — | Session-pooler URL. Used **only** by `db:push` and `db:verify`; the app never opens a Postgres connection. |
+
+---
+
+## 12. Decisions and known limits
+
+**A 4-digit code is weak.** 9,000 possibilities, and codes must be unique
+across the whole deployment. It is the default so the demo matches the build
+guide. For real use set `CODE_LENGTH=6`, and for anything sensitive move to a
+WhatsApp one-time code — the login endpoint is already the only place a code is
+checked, so that is a change in one file.
+
+**Codes cannot be displayed.** The build guide's student screen shows a "family
+code" card. Because codes are hashed, that card shows **"Send a new family
+code"** instead. Showing a stored code would mean storing it in plain text.
+
+**"Not marked" instead of "done".** The guide treats a past class as done. This
+version shows a past unmarked class as **Not marked** and lets the teacher open
+and mark it — truthful, and it means a forgotten class is visible rather than
+silently counted as income.
+
+**"Parent reminded" is real.** The guide fakes it ("today or tomorrow counts as
+reminded"). Here it reflects `notified_at`, set when the teacher taps *Remind
+parent* or when the nightly job sends tomorrow's reminders.
+
+**The seeded "days late" are honest, not the guide's numbers.** The demo student
+owes 4 classes × LKR 1,500 = LKR 6,000, as the checklist requires, but the days
+late follow from the generated history (roughly 12 days, not 32) because that is
+what two classes a week actually produces.
+
+**The month chart holds as much history as the ledger has.** The guide's
+earlier months were fixed numbers; here they come from `teacher_months`, so a
+fresh database shows fewer months until it has them.
+
+**One teacher per login, many teachers per deployment.** The schema is
+multi-tenant and every query is scoped by `teacher_id`, but there is no
+self-service teacher sign-up — a teacher is created in SQL and given a code with
+`npm run set-code`. That is the right trade for a pilot; a sign-up flow is the
+obvious next addition.
+
+**No push notifications.** Updates reach families through WhatsApp and the
+in-app feed. Web push would need a subscription table and VAPID keys.
+
+**Reschedule requests** are saved and shown to the teacher, who can accept or
+decline. The family is not yet told the outcome automatically.
+
+**Paper files.** Papers can be sold and sent, and the storage bucket and signed
+links are in place, but there is no upload screen yet — set `papers.file_path`
+in SQL after uploading to the `papers` bucket, and the Open button works.
+
+**The hour grid starts at the earliest class.** It expands to fit whatever is
+on screen rather than always showing 00:00–24:00.
+
+---
+
+## Licence and credit
+
+The design, screen structure and business rules follow the *Plus Teacher App*
+build guide. The code here is an independent implementation. "Nimal Sir" and the
+seeded students are demo data — replace them, and the brand, with your own.

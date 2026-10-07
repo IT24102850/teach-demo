@@ -1,0 +1,20 @@
+{
+  "name": "plus-teacher-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Timetable, attendance, fees and parent updates for private tuition teachers.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "db:push": "node --env-file=.env scripts/db-push.mjs",
+    "db:verify": "node --env-file=.env scripts/db-verify.mjs",
+    "seed": "node --env-file=.env scripts/seed.mjs",
+    "seed:fresh": "node --env-file=.env scripts/seed.mjs --fresh",
+    "set-code": "node --env-file=.env scripts/set-code.mjs",
+    "test": "node --test tests/*.test.js",
+    "deploy": "vercel --prod"
+  }
+}
