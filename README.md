@@ -8,6 +8,23 @@ Built from the *Plus Teacher App* build guide. This is the working version: a
 real PostgreSQL database, server-checked logins, a money ledger, real WhatsApp
 sending and a scheduled job for fee reminders.
 
+**Live:** <https://plus-teacher-app.vercel.app>
+
+| Sign in as | Code | Opens |
+| --- | --- | --- |
+| Teacher | `1234` | Nimal Sir — 17 students, 11 classes, 8 weeks of history |
+| Parent / Student | `3333` | Kasun Perera — owes 4 classes, LKR 6,000 |
+| Parent / Student | `4444` | Amaya Jayasinghe — all paid, top of the leaderboard |
+| Parent / Student | `5555` | Dilini **and** Nimali Silva — one code, two children |
+| Parent / Student | `6666` | Ravi Fernando — a bank slip waiting to be confirmed |
+
+The same code opens both the Parent and the Student view; switch with the pill
+at the top right. The sign-up form is at
+[`/join?t=nimal`](https://plus-teacher-app.vercel.app/join?t=nimal).
+
+Those codes are printed on the login screen because `DEMO_HINT=1` is set. Turn
+it off, and raise `CODE_LENGTH` to 6, before a real teacher uses this.
+
 ```
 Browser (PWA)  ──►  /api/* on Vercel  ──►  Supabase PostgreSQL + Storage
    static files        serverless            row level security on,
@@ -15,6 +32,9 @@ Browser (PWA)  ──►  /api/* on Vercel  ──►  Supabase PostgreSQL + Sto
 ```
 
 ---
+
+> The data behind that deployment is demo data. `npm run seed:fresh` rebuilds
+> it at any time.
 
 ## Table of contents
 
@@ -441,9 +461,36 @@ set local hour, move to a paid plan or trigger it from any external scheduler.
 
 ## 10. Tests
 
+There are three suites. The first needs nothing; the other two drive the real
+database and a running deployment.
+
 ```bash
-npm test
+npm test          # 141 tests · no database, no network
+npm run check:db  #  99 checks · the SQL rules, against your real database
+npm run check:live #201 checks · the whole API and everything the browser loads
 ```
+
+`check:db` and `check:live` each build their own throwaway teacher, students,
+classes and family code, drive everything through that, and delete it when they
+finish — your real data is never touched. If a run dies before it can tidy up,
+it says so, and `npm run check:clean` removes the leftovers (it only ever
+touches rows named `Live <digits>` or `Check <digits>`).
+
+`check:live` takes a URL, defaulting to `APP_URL`:
+
+```bash
+npm run check:live                             # production
+npm run check:live -- http://localhost:3077    # a local server
+```
+
+Run it against a local server while developing. It paces its requests, because
+a few hundred calls in a few seconds from one address looks exactly like an
+attack — on Vercel, Attack Challenge Mode will start answering with a
+JavaScript challenge that no command-line client can pass. If that happens the
+check says so instead of reporting sixty misleading failures; turn it off under
+**Project → Firewall**, or point the check at a local server.
+
+### What `npm test` covers
 
 140 tests, no database and no network. They cover the checklist in section 11 of
 the build guide, plus the handlers and every screen:
@@ -485,17 +532,14 @@ the build guide, plus the handlers and every screen:
   capped at what is owed, the fee-reminder preview byte-identical to what is
   sent, and the cron job refusing a caller without `CRON_SECRET`.
 
-### The SQL
+### What `check:db` covers
 
 `npm test` covers the JavaScript. The money rules also live in SQL views and
-functions, and only PostgreSQL can judge those, so they have their own check:
-
-```bash
-npm run db:verify
-```
-
-It inserts a fixture, asserts every rule against it, and **rolls the whole
-thing back** — safe to run against a database with real data in it. It checks:
+functions, and only PostgreSQL can judge those. `npm run check:db` reaches the
+real database with the same keys the app uses, so it runs anywhere the app
+runs. (`npm run db:verify` does the same over a direct Postgres connection
+inside a transaction it rolls back; that needs `DATABASE_URL`.) Between them
+they check:
 
 * every table, view, function and storage bucket exists;
 * RLS is on for every table, there are no policies, and `anon` /
@@ -517,9 +561,49 @@ thing back** — safe to run against a database with real data in it. It checks:
 * a class cannot be charged to the same student twice, a class must either
   repeat or have a single date, and deleting a teacher cascades.
 
-It needs `DATABASE_URL`; [`scripts/pg.mjs`](scripts/pg.mjs) is a small
+…and that deleting a teacher cascades through every table.
+
+`db:verify` needs `DATABASE_URL`; [`scripts/pg.mjs`](scripts/pg.mjs) is a small
 PostgreSQL client (TLS, SCRAM-SHA-256, simple queries) written for this, so
 there is still no npm dependency anywhere in the project.
+
+### What `check:live` covers
+
+**The frontend** — every file the browser asks for is served and is
+byte-for-byte the file in the repository; the whole module graph is followed
+from `app/main.js` and `app/join.js` with no dead imports; the HTML really
+loads `app/main.js` as a module and has the containers to render into; the
+manifest is installable; the stylesheet carries the night tokens, the day
+overrides and a reduced-motion block; `script-src` is `'self'` with no
+`unsafe-eval`, `frame-ancestors` is `none`, and the fonts and signed Supabase
+images the app needs are allowed; and `.env`, `schema.sql`, `scripts/`,
+`tests/`, `package.json` and `api/_lib/db.js` are all unreachable.
+
+**The backend** — every endpoint and every refusal: wrong, malformed and
+wrong-role codes; the lock-out after repeated wrong codes (including that the
+right code is refused while locked); the cookie's `HttpOnly`, `SameSite` and
+`Secure` flags, and that the code is not in it; a tampered cookie and a forged
+signature; a parent cookie on the teacher API and the reverse; attendance
+charging only those present, at each student's own fee, with one WhatsApp per
+absent parent; a fee preview that is byte-identical to what is sent; part
+payments, slip confirmation and a reminder refused when nothing is owed; a slip
+rejected unless it really is an image, then fetched by the teacher as a signed
+URL; marks validated; classes created, named by size, skipped, restored and
+retired; the whole sign-up path from public form to pending student to a
+confirmed code that works, a replacement code that works and an old one that
+does not; **a classmate from another family reduced to a first name and an
+initial with no id, and their surname and phone absent from the payload**;
+switching child and switching between the Parent and Student views; the cron
+job refusing a caller without `CRON_SECRET`; and unknown actions answering 404
+rather than crashing.
+
+### What the tests do not reach
+
+Nothing drives a real browser — there is no headless browser in this project,
+by the same no-dependencies rule as everything else. `tests/render.test.js`
+renders every screen's HTML from fixture data, and `check:live` proves the
+browser can load every module, but the last mile (a tap actually opening a
+sheet) is checked by hand.
 
 ---
 

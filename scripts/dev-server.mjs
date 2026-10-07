@@ -9,7 +9,7 @@
  */
 
 import { createServer } from 'node:http';
-import { createReadStream } from 'node:fs';
+import { createReadStream, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,65 @@ import { dirname } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 3000);
+
+const read = (name) => {
+  try {
+    return readFileSync(join(ROOT, name), 'utf8');
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * Apply the same response headers and the same exclusions as production, so a
+ * thing that works here works there. Without this, local development quietly
+ * runs without a Content-Security-Policy and serves the schema and the scripts.
+ */
+const VERCEL = (() => {
+  try {
+    return JSON.parse(read('vercel.json') || '{}');
+  } catch {
+    return {};
+  }
+})();
+
+const HEADER_RULES = (VERCEL.headers || []).map((rule) => ({
+  test: new RegExp(`^${String(rule.source).replace(/\(\.\*\)/g, '.*').replace(/:[A-Za-z]+/g, '[^/]+')}$`),
+  headers: rule.headers || [],
+}));
+
+const IGNORED = read('.vercelignore')
+  .split('\n')
+  .map((line) => line.trim())
+  .filter((line) => line && !line.startsWith('#') && !line.startsWith('!'))
+  .map((line) => line.replace(/^\/+|\/+$/g, ''));
+
+/**
+ * Files Vercel consumes at build time and never serves. They cannot go in
+ * .vercelignore - the build needs them - so they are listed here instead.
+ */
+const NEVER_SERVED = new Set([
+  'package.json', 'package-lock.json', 'vercel.json',
+  '.gitignore', '.vercelignore', '.gitattributes',
+]);
+
+const isIgnored = (pathname) => {
+  const clean = pathname.replace(/^\/+/, '');
+  if (NEVER_SERVED.has(clean)) return true;
+  // Vercel does not serve dotfiles, whatever .vercelignore says.
+  if (clean.split('/').some((part) => part.startsWith('.'))) return true;
+  return IGNORED.some((entry) => {
+    if (entry.startsWith('*.')) return clean.endsWith(entry.slice(1));
+    return clean === entry || clean.startsWith(`${entry}/`);
+  });
+};
+
+function applyHeaders(res, pathname) {
+  for (const rule of HEADER_RULES) {
+    if (!rule.test.test(pathname)) continue;
+    for (const { key, value } of rule.headers) res.setHeader(key, value);
+  }
+}
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -49,6 +108,14 @@ async function apiHandler(name) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  applyHeaders(res, url.pathname);
+
+  if (isIgnored(url.pathname)) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
 
   if (url.pathname.startsWith('/api/')) {
     const name = url.pathname.slice(5).replace(/\/+$/, '');

@@ -2,7 +2,6 @@
 # it, and serving it would leak the schema and the tooling for no benefit.
 .env
 .env.*
-!.env.example
 tests
 scripts
 supabase
