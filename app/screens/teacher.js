@@ -9,6 +9,7 @@ import { t } from '../i18n.js';
 import * as R from '../rules.js';
 import { S, classById, classes, studentById, students } from '../state.js';
 import {
+  actionButton,
   avatar,
   backButton,
   bar,
@@ -61,6 +62,13 @@ function statusPill(session) {
 
 const typeKey = (n) => R.classType(n).toLowerCase().replace(' ', '_');
 
+/** Point 12: the stored kind, and the venue written the way it was entered. */
+const kindLabel = (cls) => t(R.classKind(cls) === 'individual' ? 'individual' : 'group');
+const placeOf = (cls) =>
+  R.venueLabel(cls, { ownPlaceName: S.teacher?.own_place_name || t('my_own_place') }) ||
+  cls.place ||
+  '';
+
 export function sessionCard(session, { showDate = false } = {}) {
   const { cls } = session;
   const count = (cls.student_ids || []).length;
@@ -79,7 +87,7 @@ export function sessionCard(session, { showDate = false } = {}) {
     )}</b>${statusPill(session)}</div>
      <div data-a="${isFuture ? 'class.open' : 'attend.open'}" data-i="${esc(session.key)}" role="button" tabindex="0">
        <b class="sess-t">${esc(cls.title)}</b>
-       ${muted(`${cls.curriculum} · ${t(typeKey(count))} · ${cls.place || ''}`)}
+       ${muted(`${cls.curriculum} · ${kindLabel(cls)} · ${placeOf(cls)}`)}
      </div>
      ${footer}`,
     {
@@ -208,6 +216,20 @@ function nowLine(from, to) {
   return `<div class="now" style="top:${top}px" aria-hidden="true"></div>`;
 }
 
+/**
+ * Point 9: the empty hours are tappable. Tapping one opens quick-create with
+ * that day and time already filled in. They are drawn before the class blocks
+ * so a block always wins the tap.
+ */
+function slotCells(date, from, to) {
+  return Array.from({ length: to - from }, (_, i) => {
+    const time = `${String(from + i).padStart(2, '0')}:00`;
+    return `<button type="button" class="slot" style="top:${i * HOUR_PX}px;height:${HOUR_PX}px"
+      data-a="class.quick" data-i="${esc(`${date}|${time}`)}"
+      aria-label="${esc(`${t('new_class')} ${R.clock12(time)}`)}"></button>`;
+  }).join('');
+}
+
 function dayBlocks(date, { narrow = false, from, to } = {}) {
   return R.layoutDay(R.sessionsOn(S.data, date))
     .map((b) => {
@@ -232,10 +254,12 @@ function dayBlocks(date, { narrow = false, from, to } = {}) {
 function calendarDay() {
   const sessions = R.sessionsOn(S.data, S.cal.date);
   const { from, to } = hourWindow(sessions);
-  if (!sessions.length) return emptyState(t('no_classes_day'), '📅');
+  // The grid is drawn even on an empty day: point 9 wants a tappable slot
+  // there, not a shrug.
   return `<div class="tl">${hourColumn(from, to)}
     <div class="tl-grid" style="height:${(to - from) * HOUR_PX}px">
       ${Array.from({ length: to - from }, (_, i) => `<div class="tl-line" style="top:${i * HOUR_PX}px"></div>`).join('')}
+      ${slotCells(S.cal.date, from, to)}
       ${dayBlocks(S.cal.date, { from, to })}
       ${S.cal.date === S.today ? nowLine(from, to) : ''}
     </div></div>`;
@@ -271,6 +295,11 @@ function calendarWeek() {
       </div></div>`;
 }
 
+/**
+ * Point 9: one class is one small dot, coloured by subject. Tapping a day
+ * selects it; the classes on it appear in the agenda below, as Google does,
+ * instead of being crushed into the cell.
+ */
 function calendarMonth() {
   const first = R.startOfMonth(S.cal.date);
   const gridStart = R.addDays(first, -R.weekday(first));
@@ -282,7 +311,15 @@ function calendarMonth() {
         const date = R.addDays(gridStart, i);
         const sessions = R.sessionsOn(S.data, date);
         const outside = date.slice(0, 7) !== month;
-        return `<button type="button" class="mon-d${outside ? ' x' : ''}${date === S.today ? ' today' : ''}" data-a="cal.day" data-i="${date}">
+        const classes = [
+          outside ? 'x' : '',
+          date === S.today ? 'today' : '',
+          date === S.cal.date ? 'sel' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        return `<button type="button" class="mon-d ${classes}" data-a="cal.pick" data-i="${date}"
+          aria-pressed="${date === S.cal.date}">
           <span class="mon-n">${esc(Number(date.slice(8)))}</span>
           ${sessions
             .slice(0, 3)
@@ -297,7 +334,36 @@ function calendarMonth() {
     </div>
     <p class="legend">${(S.teacher?.subjects?.length ? S.teacher.subjects : Object.keys(R.SUBJECT_COLOUR))
       .map((s) => `<span><i style="background:${R.subjectColour(s)}"></i>${esc(s)}</span>`)
-      .join('')}</p>`;
+      .join('')}</p>
+    ${agenda(S.cal.date)}`;
+}
+
+/** The list under the month: the chosen day's classes, earliest first. */
+export function agenda(date) {
+  const sessions = R.sessionsOn(S.data, date);
+  return `
+    <p class="agenda-h">${esc(R.dateTitle(date, S.lang))}</p>
+    ${
+      sessions.length
+        ? `<div class="agenda">${sessions
+            .map((session) => {
+              const { cls } = session;
+              const act = session.date > S.today ? 'class.open' : 'attend.open';
+              return `<div class="agenda-row">
+                <span class="agenda-t">${esc(R.clock12(cls.start_time))}</span>
+                <button type="button" class="agenda-c${session.done ? ' is-done' : ''}"
+                  style="background:${R.subjectColour(cls.subject)}"
+                  data-a="${act}" data-i="${esc(session.key)}">
+                  <b>${esc(cls.title)}</b>
+                  <span>${esc(
+                    [placeOf(cls), R.durationLabel(cls.duration_hours)].filter(Boolean).join(' · '),
+                  )}</span>
+                </button>
+              </div>`;
+            })
+            .join('')}</div>`
+        : emptyState(t('nothing_on'), '📅')
+    }`;
 }
 
 export function calendar() {
@@ -307,11 +373,10 @@ export function calendar() {
 
   return `
     <div class="row sp top-row">
-      <h1 class="cal-h">${esc(title)}</h1>
-      <div class="row gap-s">
-        ${button(t('today'), { act: 'cal.day', arg: S.today, cls: 'sm o' })}
-        ${iconButton('+', { act: 'class.add', aria: t('add_class'), cls: 'brandy' })}
-      </div>
+      <button type="button" class="cal-h" data-a="cal.jump"
+        style="background:none;border:0;color:inherit;font:inherit;padding:0;cursor:pointer;text-align:left"
+        aria-label="${esc(t('jump_to_month'))}">${esc(title)} <span aria-hidden="true">⌄</span></button>
+      ${button(t('today'), { act: 'cal.day', arg: S.today, cls: 'sm o' })}
     </div>
     ${segmented(
       [
@@ -329,6 +394,7 @@ export function calendar() {
     </div>
     ${body}
     ${button(t('all_classes'), { act: 'nav.allclasses', cls: 'o wide mt' })}
+    <button type="button" class="fab" data-a="class.add" aria-label="${esc(t('add_class'))}">+</button>
   `;
 }
 
@@ -441,36 +507,186 @@ export function classDetail() {
 
 /* -------------------------------------------------------- 3 · attendance -- */
 
+/**
+ * Point 10: one screen, three states.
+ *
+ *   Scheduled   - the class has not begun. One button: Start class.
+ *   In progress - a running timer, the student list, End class.
+ *   Ended       - the real times, the counts, and the message that went to
+ *                 each absent student's parent.
+ *
+ * The clock times are the real ones, so "hours taught" on the dashboard is
+ * what happened rather than what was planned.
+ */
 export function attendance() {
   const [classId, date] = String(S.sub.key).split('|');
   const cls = classById(classId);
   if (!cls) return emptyState('That class is gone.', '🤷');
-  const absent = S.sub.absent || [];
+
+  const session = R.sessionsOn(S.data, date).find((x) => x.cls.id === classId) || {
+    cls,
+    date,
+    done: false,
+    absent: [],
+  };
+  const state = S.sub.result ? 'ended' : R.sessionState(session);
   const enrolled = (cls.student_ids || []).map(studentById).filter(Boolean);
 
-  return `
+  const head = `
     <div class="row top-row">${backButton()}
-      <div><h1 class="att-h">${esc(cls.title)}</h1>
-      ${muted(`${R.dateTitle(date, S.lang)} · ${R.timeRange(cls)} · ${cls.place || ''}`)}</div>
-    </div>
-    <p class="mu note">${esc(t('everyone_present'))}</p>
+      <div class="g"><h1 class="att-h">${esc(
+        state === 'ended' ? t('class_ended') : cls.title,
+      )}</h1>
+      ${muted(`${R.dateTitle(date, S.lang)} · ${R.timeRange(cls)} · ${placeOf(cls)}`)}</div>
+    </div>`;
+
+  if (state === 'ended') return head + attendanceEnded(cls, date, session, enrolled);
+  if (state === 'running') return head + attendanceRunning(cls, date, session, enrolled);
+  return head + attendanceScheduled(cls, date, session);
+}
+
+/** Before the class: the scheduled card and a single Start button. */
+function attendanceScheduled(cls, date, session) {
+  return `
+    ${card(
+      `<div class="row sp">${muted(`${R.timeRange(cls)} · ${t('scheduled')}`)}${
+        session.notified ? pill(t('reminded'), 't') : ''
+      }</div>
+       <b class="sess-t">${esc(cls.title)}</b>
+       ${muted(`${cls.curriculum} · ${kindLabel(cls)} · ${placeOf(cls)}`)}`,
+      { cls: 'att-head', style: `border-left-color:${R.subjectColour(cls.subject)}` },
+    )}
+    ${card(
+      `<p class="mu center">${esc(t('not_started'))}</p>
+       <div class="timer" id="att-timer">00:00:00</div>
+       ${actionButton(`▶ ${t('start_class')}`, { act: 'attend.start', cls: 'wide' })}`,
+    )}
+    <p class="mu center note">${esc(t('real_times_saved'))}</p>
+    ${
+      // Point 10: a teacher who forgot to press Start can still mark the class
+      // with the time it was meant to run.
+      date <= S.today
+        ? button(t('use_scheduled_time'), { act: 'attend.scheduled', cls: 'o wide' })
+        : ''
+    }
+  `;
+}
+
+/** During the class: a live timer, the roll, and End class. */
+function attendanceRunning(cls, date, session, enrolled) {
+  const absent = S.sub.absent || [];
+  const told = S.sub.told || [];
+  const startedAt = session.started_at || S.sub.startedAt || new Date().toISOString();
+
+  return `
+    ${card(
+      `<div class="row sp"><div class="g"><b class="sess-t">${esc(cls.title)}</b>
+         ${muted(t('class_started') + ' · ' + R.clock12(localTime(startedAt)))}</div>
+       ${pill('● ' + t('in_progress'), 'g')}</div>
+       <div class="timer" id="att-timer" data-since="${esc(startedAt)}">${esc(
+         R.elapsed(startedAt),
+       )}</div>`,
+      { cls: 'att-head', style: `border-left-color:${R.subjectColour(cls.subject)}` },
+    )}
+
+    <p class="att-note">${esc(t('tap_absent'))}</p>
     ${enrolled
-      .map((s) => {
-        const isAbsent = absent.includes(s.id);
+      .map((student) => {
+        const isAbsent = absent.includes(student.id);
         return card(
-          `<div class="row">${avatar(s.name)}
-            <div class="g"><b>${esc(s.name)}</b>${muted(`${t('grade')} ${s.grade ?? '–'}`)}</div>
+          `<div class="row">${avatar(student.name)}
+            <div class="g"><b>${esc(student.name)}</b>${muted(`${t('grade')} ${student.grade ?? '–'}`)}</div>
             ${pill(isAbsent ? t('absent') : t('present'), isAbsent ? 'p' : 'g')}</div>`,
-          { act: 'attend.toggle', arg: s.id, cls: `tap att-row ${isAbsent ? 'is-absent' : 'is-present'}` },
+          {
+            act: 'attend.toggle',
+            arg: student.id,
+            cls: `tap att-row ${isAbsent ? 'is-absent' : 'is-present'}`,
+          },
         );
       })
       .join('')}
-    <div class="row sp mt">
-      <b>${esc(t('count_present_absent', { present: enrolled.length - absent.length, absent: absent.length }))}</b>
-    </div>
-    ${button(t('done'), { act: 'attend.finish', cls: 'wide' })}
-    <p class="mu center note">${esc(t('parents_get_message'))}</p>
+
+    ${
+      absent.length
+        ? card(
+            `<b>${esc(t('n_absent', { n: absent.length }))}</b>
+             ${muted(
+               t('absent_on_end', {
+                 name: absent
+                   .map((id) => studentById(id)?.call_name || studentById(id)?.name || '')
+                   .filter(Boolean)
+                   .join(', '),
+               }),
+             )}
+             ${
+               // "Send now" for a teacher who wants to reach the parent while
+               // the class is still running. A parent told now is not told
+               // again when the class ends.
+               absent.some((id) => !told.includes(id))
+                 ? `<button type="button" class="link-btn" data-a="attend.sendnow">${esc(
+                     t('send_now'),
+                   )}</button>`
+                 : muted(t('message_sent_at', { time: '' }).trim())
+             }`,
+            { cls: 'warn' },
+          )
+        : ''
+    }
+
+    ${actionButton(`■ ${t('end_class')}`, { act: 'attend.finish', cls: 'd wide' })}
   `;
+}
+
+/** After the class: what was recorded, and what the parents were told. */
+function attendanceEnded(cls, date, session, enrolled) {
+  const result = S.sub.result;
+  const absentIds = result ? result.absentIds : session.absent || [];
+  const minutes = R.taughtMinutes(result || session);
+  const range = R.realRange(result || session);
+  const present = enrolled.length - absentIds.length;
+
+  return `
+    ${card(
+      `${label(t('taught'))}
+       <div class="row sp"><b class="sess-t">${esc(range || R.timeRange(cls))}</b>
+       ${pill(R.durationLabel(minutes === null ? Number(cls.duration_hours) : minutes / 60), 't')}</div>`,
+    )}
+    ${tiles([
+      { label: t('present'), value: String(present), colour: 'var(--gt)' },
+      { label: t('absent'), value: String(absentIds.length), colour: 'var(--pt)' },
+    ])}
+
+    ${(result?.messages || [])
+      .map(
+        (m) => `${card(
+          `${label(t('message_to_parent', { name: m.name }))}
+           <div class="bub">${esc(m.text)}</div>
+           ${
+             m.status === 'sent'
+               ? `<p class="fld-note ok">✓✓ ${esc(t('message_sent_at', { time: m.at || '' }))}</p>`
+               : m.status === 'manual'
+                 ? `<a class="btn sm o" href="${esc(m.link)}" target="_blank" rel="noopener">${esc(
+                     t('send_on_whatsapp'),
+                   )}</a>`
+                 : `<p class="fld-note no">${esc(t('message_not_sent'))}</p>`
+           }
+           <div class="row gap mt-s">
+             ${button(t('resend'), { act: 'attend.resend', arg: m.student_id, cls: 'sm gh' })}
+             ${button(t('edit_text'), { act: 'attend.edittext', arg: m.student_id, cls: 'sm o' })}
+           </div>`,
+        )}`,
+      )
+      .join('')}
+
+    ${button(t('start_end_wrong'), { act: 'attend.fixtimes', cls: 'o wide' })}
+    ${button(t('done'), { act: 'attend.close', cls: 'wide' })}
+  `;
+}
+
+/** An ISO timestamp as the local HH:MM the clock helpers expect. */
+function localTime(iso) {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 /* ---------------------------------------------------------- 4 · students -- */
@@ -590,6 +806,8 @@ export function studentDetail() {
        }`,
     )}
 
+    ${paymentHistory(s.id)}
+
     ${card(
       `${label(t('marks'))}
        ${
@@ -611,6 +829,36 @@ export function studentDetail() {
       ${button(t('send_report'), { act: 'report.send', arg: s.id })}
     </div>
   `;
+}
+
+/**
+ * Point 11: every receipt, newest first, with Undo after the ten seconds on
+ * the result screen have passed. A reversed payment stays on the list, marked,
+ * so the history always explains the balance.
+ */
+function paymentHistory(studentId) {
+  const rows = (S.data.payments || []).filter((p) => p.student_id === studentId).slice(0, 6);
+  if (!rows.length) return '';
+  return card(
+    `${label(t('payment_history'))}
+     ${rows
+       .map(
+         (p) => `<div class="row sp mt-s"${p.reversed_at ? ' style="opacity:.55"' : ''}>
+           <div class="g"><b class="amt">${esc(R.money(p.amount))}</b>
+           ${muted(
+             `${R.receiptNo(p.receipt_no)} · ${p.paid_date} · ${p.method}${
+               p.reversed_at ? ` · ${t('reversed')}` : ''
+             }`,
+           )}</div>
+           ${
+             p.reversed_at
+               ? pill(t('reversed'), 'p')
+               : button(t('undo'), { act: 'fees.undo', arg: p.id, cls: 'sm gh' })
+           }
+         </div>`,
+       )
+       .join('')}`,
+  );
 }
 
 /* -------------------------------------------------------------- 5 · fees -- */
@@ -828,18 +1076,50 @@ export const SUBS = {
 
 export const ACTIONS = FORM_ACTIONS;
 
-/** Hooks that need the real DOM: live search, and scrolling to "now". */
+/* The running class timer. One interval, started and stopped by `after`. */
+let timerHandle = null;
+let searchHandle = null;
+
+/**
+ * Hooks that need the real DOM: the live search, the running timer, and
+ * scrolling to "now".
+ */
 export function after(ctx) {
+  /* Point 1: filtering waits 200 ms after the last key, and only the list is
+     redrawn - the search box itself is never replaced, so the caret stays
+     where it is and no letter is dropped. */
   const search = document.getElementById('q');
-  if (search) {
+  if (search && !search.dataset.wired) {
+    search.dataset.wired = '1';
     search.oninput = (e) => {
       S.search = e.target.value;
-      const list = document.getElementById('student-list');
-      if (list) {
-        list.innerHTML =
-          studentList() || emptyState(S.search ? t('no_match') : t('no_students_yet'), '🔍');
-      }
+      clearTimeout(searchHandle);
+      searchHandle = setTimeout(() => {
+        const list = document.getElementById('student-list');
+        if (list) {
+          list.innerHTML =
+            studentList() || emptyState(S.search ? t('no_match') : t('no_students_yet'), '🔍');
+        }
+      }, 200);
     };
+  }
+
+  /* Point 10: the class timer ticks without redrawing the whole screen. */
+  const timer = document.getElementById('att-timer');
+  clearInterval(timerHandle);
+  timerHandle = null;
+  if (timer?.dataset.since) {
+    const tick = () => {
+      const live = document.getElementById('att-timer');
+      if (!live?.dataset.since) {
+        clearInterval(timerHandle);
+        timerHandle = null;
+        return;
+      }
+      live.textContent = R.elapsed(live.dataset.since);
+    };
+    timerHandle = setInterval(tick, 1000);
+    tick();
   }
 
   if (S.tab === 'classes' && !S.sub && S.cal.mode !== 'month' && S.cal.date === S.today) {

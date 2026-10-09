@@ -2,7 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- Point 4: the page may not be zoomed. maximum-scale + user-scalable stop
+         pinch zoom where the browser honours them; 16px inputs (style.css) stop
+         the iOS tap-to-zoom, which is the part Safari always obeys. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
     <title>Plus · Teacher App</title>
     <meta
       name="description"
@@ -10,16 +16,18 @@
     />
     <meta name="theme-color" content="#000000" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" href="/assets/icon-192.png" />
     <link rel="apple-touch-icon" href="/assets/icon-192.png" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Anton&family=Manrope:wght@500;700;800&family=Noto+Sans+Tamil:wght@500;700;800&display=swap"
-    />
+
+    <!-- Point 1: style.css is the only render-blocking request. The web fonts
+         are attached by app/fonts.js after the first paint, so text shows at
+         once in the system font and swaps when Manrope arrives. The page is
+         never blank waiting for Google. -->
     <link rel="stylesheet" href="/style.css" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   </head>
   <body>
     <a class="skip" href="#scr">Skip to content</a>

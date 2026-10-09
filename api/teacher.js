@@ -8,7 +8,7 @@
  */
 
 import * as db from './_lib/db.js';
-import { bad, guard, ok, query, readJson, resource } from './_lib/http.js';
+import { bad, guard, json, ok, query, readJson, resource } from './_lib/http.js';
 import { codeLookup, hashCode, randomCode } from './_lib/session.js';
 import { teacherSession } from './_lib/session.js';
 import * as R from './_lib/rules.js';
@@ -17,11 +17,14 @@ import { sendWhatsApp, waLink } from './_lib/whatsapp.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+/* Point 11: the three ways a parent can pay, plus the bank slip. */
+const PAYMENT_METHODS = ['Cash', 'Bank transfer', 'Online', 'Slip'];
+
 const STUDENT_FIELDS =
-  'id,name,grade,school,area,curriculum,subject,wanted_subjects,fee_per_class,parent_name,' +
-  'parent_phone,status,slip_path,slip_sent_at,last_reminded_at,created_at,amount_due,' +
-  'pending_classes,oldest_unpaid,paid_total,days_late,hist,total_classes,present_classes,' +
-  'mark_count,avg_pct,best_pct,first_pct,latest_pct';
+  'id,name,call_name,grade,school,area,curriculum,subject,wanted_subjects,ambition,' +
+  'fee_per_class,parent_name,parent_occupation,parent_phone,status,slip_path,slip_sent_at,' +
+  'last_reminded_at,created_at,amount_due,pending_classes,oldest_unpaid,paid_total,days_late,' +
+  'hist,total_classes,present_classes,mark_count,avg_pct,best_pct,first_pct,latest_pct';
 
 /* --------------------------------------------------------------- loading -- */
 
@@ -43,7 +46,9 @@ async function loadClasses(tid) {
 
 async function loadSessions(tid, from, to) {
   const rows = await db.select('sessions', {
-    select: 'id,class_id,session_date,status,notified_at,attendance(student_id,present)',
+    select:
+      'id,class_id,session_date,status,notified_at,started_at,ended_at,' +
+      'attendance(student_id,present)',
     teacher_id: `eq.${tid}`,
     and: `(session_date.gte.${from},session_date.lte.${to})`,
     order: 'session_date.asc',
@@ -54,6 +59,9 @@ async function loadSessions(tid, from, to) {
     date: s.session_date,
     status: s.status,
     notified_at: s.notified_at,
+    // Point 10: the clock times behind "In progress" and "Ended".
+    started_at: s.started_at,
+    ended_at: s.ended_at,
     absent: (s.attendance || []).filter((a) => !a.present).map((a) => a.student_id),
     present: (s.attendance || []).filter((a) => a.present).map((a) => a.student_id),
   }));
@@ -64,8 +72,19 @@ async function bootstrap(req, tid) {
   const from = R.addDays(today, -200);
   const to = R.addDays(today, 90);
 
-  const [teacher, students, classes, sessions, papers, sales, events, months, reschedules, marks] =
-    await Promise.all([
+  const [
+    teacher,
+    students,
+    classes,
+    sessions,
+    papers,
+    sales,
+    events,
+    months,
+    reschedules,
+    marks,
+    payments,
+  ] = await Promise.all([
       db.selectOne('teachers', { id: `eq.${tid}` }),
       db.select('v_students', {
         select: STUDENT_FIELDS,
@@ -95,6 +114,14 @@ async function bootstrap(req, tid) {
         teacher_id: `eq.${tid}`,
         order: 'taken_on.asc',
       }),
+      // Point 11: the recent receipts, so the student screen can show the
+      // history and offer Undo after the ten seconds on the result screen.
+      db.select('payments', {
+        select: 'id,student_id,amount,method,paid_date,receipt_no,reversed_at,created_at',
+        teacher_id: `eq.${tid}`,
+        order: 'created_at.desc',
+        limit: 60,
+      }),
     ]);
 
   if (!teacher) return null;
@@ -120,6 +147,7 @@ async function bootstrap(req, tid) {
     months,
     reschedules,
     marks,
+    payments,
     papers: papers.map((p) => ({
       ...p,
       sold: soldByPaper[p.id]?.sold || 0,
@@ -151,6 +179,16 @@ const mustClass = async (tid, id) => {
 const teacherName = (t) => `${t.name}${t.title ? ` ${t.title}` : ''}`;
 
 /**
+ * Point 13: a clash is not an error the teacher has to decode. 409 carries the
+ * class that is in the way, so the sheet can name it and offer "Save anyway".
+ */
+const clashReply = (res, clash) =>
+  json(res, 409, {
+    error: `That overlaps ${clash.title} (${R.hhmm(clash.start_time)}).`,
+    clash: { id: clash.id, title: clash.title, start_time: R.hhmm(clash.start_time) },
+  });
+
+/**
  * Send a message to a parent and record it as one event. Works with or without
  * the WhatsApp Cloud API: without it, `link` comes back and the browser opens
  * WhatsApp with the text ready (section 10).
@@ -167,6 +205,50 @@ async function notifyParent({ tid, student, type, text, feedText, lang }) {
     delivery_error: result.error || null,
   });
   return { event, link: result.link || null, status: result.status, lang };
+}
+
+/** An ISO timestamp, or null when the browser sent nothing usable. */
+function isoOrNull(value) {
+  if (!value) return null;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? new Date(at).toISOString() : null;
+}
+
+/**
+ * Point 10: the absent message. One wording, used by "Send now" during the
+ * class, by "End class", and by "Resend" afterwards - so the teacher always
+ * sees the text that actually went out.
+ */
+async function sendAbsent({ tid, student, cls, date, teacher, lang, override }) {
+  const text =
+    String(override || '').trim() ||
+    render(
+      'absent',
+      {
+        student: student.name,
+        subject: cls.subject,
+        teacher: teacherName(teacher),
+        class: cls.title,
+        time: R.hhmm(cls.start_time),
+      },
+      lang,
+    );
+  const result = await notifyParent({
+    tid,
+    student,
+    type: 'absent',
+    text,
+    feedText: FEED.absent({ subject: cls.subject }),
+    lang,
+  });
+  return {
+    student_id: student.id,
+    name: student.name,
+    text,
+    date,
+    status: result.status,
+    link: result.link,
+  };
 }
 
 /**
@@ -222,20 +304,51 @@ async function handlePost(req, res, tid, r) {
     /* ---- classes ---- */
     case 'class.create': {
       const studentIds = Array.isArray(body.student_ids) ? body.student_ids.filter(Boolean) : [];
-      if (!studentIds.length) return bad(res, 'Pick at least one student');
-      const once = body.once_date || null;
-      const days = Array.isArray(body.days) ? body.days.map(Number).filter((d) => d >= 0 && d <= 6) : [];
-      if (!once && !days.length) return bad(res, 'Pick at least one day');
-      if (!body.start_time) return bad(res, 'Pick a start time');
-
-      const owned = await db.select('students', {
-        select: 'id,grade,area',
-        teacher_id: `eq.${tid}`,
-        id: db.inList(studentIds),
-      });
+      const owned = studentIds.length
+        ? await db.select('students', {
+            select: 'id,grade,area',
+            teacher_id: `eq.${tid}`,
+            id: db.inList(studentIds),
+          })
+        : [];
       if (owned.length !== studentIds.length) return bad(res, 'Some students are not yours', 403);
 
-      const grade = Number(body.grade) || owned[0].grade || 0;
+      const once = body.once_date || null;
+      const days = Array.isArray(body.days)
+        ? [...new Set(body.days.map(Number).filter((d) => d >= 0 && d <= 6))]
+        : [];
+
+      // Point 12: the kind is what the teacher chose, not a guess from how
+      // many students were picked, and the venue question that goes with that
+      // kind must have been answered.
+      const draft = {
+        kind: R.CLASS_KINDS.includes(body.kind)
+          ? body.kind
+          : R.classKind({ student_ids: studentIds }),
+        venue_type: R.VENUE_TYPES.includes(body.venue_type) ? body.venue_type : 'area',
+        venue_name: body.venue_name,
+        area: body.area || body.place || owned[0]?.area || '',
+        student_ids: studentIds,
+        days,
+        once_date: once,
+        start_time: body.start_time,
+        duration_hours: Number(body.duration_hours) || 0,
+      };
+      if (draft.kind === 'individual') draft.venue_type = 'area';
+      if (draft.venue_type === 'own_place' && !draft.area) {
+        draft.area = teacher.own_place_area || '';
+      }
+
+      const problem = R.classDraftError(draft);
+      if (problem) return bad(res, problem);
+
+      // Point 13: an overlap is refused unless the teacher chose "Save anyway".
+      if (!body.allow_clash) {
+        const clash = R.findClash(await loadClasses(tid), { ...draft, id: null });
+        if (clash) return clashReply(res, clash);
+      }
+
+      const grade = Number(body.grade) || owned[0]?.grade || 0;
       const subject = body.subject || 'Maths';
       const [cls] = await db.insert('classes', {
         teacher_id: tid,
@@ -243,7 +356,14 @@ async function handlePost(req, res, tid, r) {
         curriculum: body.curriculum || 'Local',
         grade,
         title: body.title || R.classTitle(grade, subject, studentIds.length),
-        place: body.place || owned[0].area || '',
+        kind: draft.kind,
+        venue_type: draft.venue_type,
+        venue_name: draft.venue_type === 'institute' ? String(draft.venue_name).trim() : null,
+        area: draft.area,
+        // `place` is still filled in, so the message templates and any older
+        // screen that reads it keep working. The venue fields above are what
+        // the app itself now uses.
+        place: R.venueLabel(draft, { ownPlaceName: teacher.own_place_name || 'My home' }),
         days: once ? [] : days,
         start_time: body.start_time,
         duration_hours: Number(body.duration_hours) || 1,
@@ -256,6 +376,61 @@ async function handlePost(req, res, tid, r) {
         { returning: 'minimal' },
       );
       return ok(res, { class_id: cls.id, title: cls.title, first_date: once || null });
+    }
+
+    /**
+     * Point 9: "Edit" on a class in the calendar. This changes when and where
+     * the class runs; who is in it is changed from the class screen.
+     */
+    case 'class.update': {
+      const cls = await mustClass(tid, body.class_id);
+      const once = body.once_date === undefined ? cls.once_date : body.once_date || null;
+      const days =
+        body.days === undefined
+          ? cls.days || []
+          : [...new Set((body.days || []).map(Number).filter((d) => d >= 0 && d <= 6))];
+
+      const draft = {
+        id: cls.id,
+        kind: R.CLASS_KINDS.includes(body.kind) ? body.kind : R.classKind(cls),
+        venue_type: R.VENUE_TYPES.includes(body.venue_type)
+          ? body.venue_type
+          : cls.venue_type || 'area',
+        venue_name: body.venue_name === undefined ? cls.venue_name : body.venue_name,
+        area: (body.area === undefined ? cls.area || cls.place : body.area) || '',
+        student_ids: cls.student_ids,
+        days,
+        once_date: once,
+        start_date: cls.start_date,
+        start_time: body.start_time || R.hhmm(cls.start_time),
+        duration_hours: Number(body.duration_hours ?? cls.duration_hours) || 0,
+      };
+      if (draft.kind === 'individual') draft.venue_type = 'area';
+
+      const problem = R.classDraftError(draft);
+      if (problem) return bad(res, problem);
+
+      if (!body.allow_clash) {
+        const clash = R.findClash(await loadClasses(tid), draft);
+        if (clash) return clashReply(res, clash);
+      }
+
+      await db.update(
+        'classes',
+        {
+          kind: draft.kind,
+          venue_type: draft.venue_type,
+          venue_name: draft.venue_type === 'institute' ? String(draft.venue_name).trim() : null,
+          area: draft.area,
+          place: R.venueLabel(draft, { ownPlaceName: teacher.own_place_name || 'My home' }),
+          days: once ? [] : days,
+          once_date: once,
+          start_time: draft.start_time,
+          duration_hours: draft.duration_hours,
+        },
+        { id: `eq.${cls.id}`, teacher_id: `eq.${tid}` },
+      );
+      return ok(res, { saved: true, class_id: cls.id });
     }
 
     case 'class.delete': {
@@ -286,7 +461,30 @@ async function handlePost(req, res, tid, r) {
       return ok(res, { restored: body.date });
     }
 
-    /* ---- attendance ---- */
+    /* ---- attendance: Scheduled -> In progress -> Ended (point 10) ---- */
+
+    /**
+     * "Start class". Records the real start time and nothing else, so the
+     * class can sit in progress for as long as the lesson takes. Tapping it
+     * twice does not restart the clock - the database keeps the first time.
+     */
+    case 'attendance.start': {
+      const cls = await mustClass(tid, body.class_id);
+      const date = body.date || R.today();
+      const started = await db.rpc('start_class', {
+        p_teacher: tid,
+        p_class: cls.id,
+        p_date: date,
+      });
+      return ok(res, { started_at: started, class_id: cls.id, date });
+    }
+
+    /**
+     * "End class". One statement in the database writes the session, the
+     * attendance and the charges together, so a half-saved class cannot
+     * happen (rule 7.2.2). Then the absent parents are told - point 10 moves
+     * that to the end of the class rather than the moment it was saved.
+     */
     case 'attendance.finish': {
       const cls = await mustClass(tid, body.class_id);
       const date = body.date || R.today();
@@ -294,40 +492,120 @@ async function handlePost(req, res, tid, r) {
         cls.student_ids.includes(id),
       );
 
-      // One statement in the database: session + attendance + charges together,
-      // so a half-saved class cannot happen (rule 7.2.2).
-      await db.rpc('finish_class', {
+      // "Use scheduled time" for a teacher who forgot to press Start: the
+      // browser sends the scheduled start, and the length taught comes out as
+      // the length that was planned.
+      const started = isoOrNull(body.started_at);
+      const ended = isoOrNull(body.ended_at);
+
+      const sessionId = await db.rpc('finish_class', {
         p_teacher: tid,
         p_class: cls.id,
         p_date: date,
         p_absent: absent,
+        p_started: started,
+        p_ended: ended,
       });
 
+      // Each absent student gets exactly one message: a parent already told
+      // with "Send now" during the class is not told twice.
+      const alreadyTold = new Set(
+        Array.isArray(body.already_notified)
+          ? body.already_notified.filter((id) => absent.includes(id))
+          : [],
+      );
+      const toTell = absent.filter((id) => !alreadyTold.has(id));
+
       const sent = [];
-      if (absent.length) {
+      if (toTell.length) {
         const kids = await db.select('students', {
           select: 'id,name,parent_phone',
-          id: db.inList(absent),
+          id: db.inList(toTell),
         });
         for (const student of kids) {
-          const text = render('absent', { student: student.name, subject: cls.subject }, lang);
-          sent.push(
-            await notifyParent({
-              tid,
-              student,
-              type: 'absent',
-              text,
-              feedText: FEED.absent({ subject: cls.subject }),
-              lang,
-            }),
-          );
+          sent.push(await sendAbsent({ tid, student, cls, date, teacher, lang }));
         }
       }
+
+      const saved = await db.selectOne('sessions', {
+        select: 'id,started_at,ended_at',
+        id: `eq.${sessionId}`,
+      });
+
       return ok(res, {
         saved: true,
+        session_id: sessionId,
+        started_at: saved?.started_at || null,
+        ended_at: saved?.ended_at || null,
+        taught_minutes: R.taughtMinutes(saved || {}),
         absent: absent.length,
         present: cls.student_ids.length - absent.length,
-        messages: sent.map((s) => ({ status: s.status, link: s.link })),
+        messages: sent.map((x) => ({
+          student_id: x.student_id,
+          name: x.name,
+          text: x.text,
+          status: x.status,
+          link: x.link,
+        })),
+      });
+    }
+
+    /**
+     * "Send now": the link under the absent warning, for a teacher who wants
+     * to reach the parent while the class is still running.
+     */
+    case 'attendance.absent_now': {
+      const cls = await mustClass(tid, body.class_id);
+      const date = body.date || R.today();
+      if (!cls.student_ids.includes(body.student_id)) {
+        return bad(res, 'That student is not in this class', 404);
+      }
+      const student = await mustStudent(tid, body.student_id, 'id,name,parent_phone');
+      const result = await sendAbsent({ tid, student, cls, date, teacher, lang });
+      return ok(res, result);
+    }
+
+    /** "Not sent" on the ended screen: try that one message again. */
+    case 'attendance.resend': {
+      const cls = await mustClass(tid, body.class_id);
+      const date = body.date || R.today();
+      const student = await mustStudent(tid, body.student_id, 'id,name,parent_phone');
+      const result = await sendAbsent({
+        tid,
+        student,
+        cls,
+        date,
+        teacher,
+        lang,
+        override: body.text,
+      });
+      return ok(res, result);
+    }
+
+    /**
+     * "Start/End time wrong?" - correct the clock times after the class, so
+     * the hours on the dashboard can be put right without re-marking anyone.
+     */
+    case 'attendance.fix_times': {
+      const cls = await mustClass(tid, body.class_id);
+      const date = body.date || R.today();
+      const started = isoOrNull(body.started_at);
+      const ended = isoOrNull(body.ended_at);
+      if (!started || !ended) return bad(res, 'Enter both a start and an end time');
+      if (Date.parse(ended) <= Date.parse(started)) {
+        return bad(res, 'The class cannot end before it started');
+      }
+      const [row] = await db.update(
+        'sessions',
+        { started_at: started, ended_at: ended },
+        { class_id: `eq.${cls.id}`, session_date: `eq.${date}`, teacher_id: `eq.${tid}` },
+      );
+      if (!row) return bad(res, 'That class has not been marked yet', 404);
+      return ok(res, {
+        saved: true,
+        started_at: row.started_at,
+        ended_at: row.ended_at,
+        taught_minutes: R.taughtMinutes(row),
       });
     }
 
@@ -386,19 +664,28 @@ async function handlePost(req, res, tid, r) {
     /* ---- students ---- */
     case 'student.create': {
       if (!body.name?.trim()) return bad(res, 'Name is required');
-      if (!String(body.parent_phone || '').trim()) return bad(res, 'Parent WhatsApp number is required');
+      // Point 3: the same rule as the join form. Adding a student by hand
+      // cannot smuggle in a number WhatsApp will not accept.
+      const phone = R.toLkMobile(body.parent_phone);
+      if (!phone) {
+        return bad(res, 'Enter a Sri Lankan mobile number: 9 digits starting with 7');
+      }
+      const name = body.name.trim();
       const [student] = await db.insert('students', {
         teacher_id: tid,
-        name: body.name.trim(),
+        name,
+        call_name: String(body.call_name || '').trim() || name.split(/\s+/)[0],
         grade: Number(body.grade) || null,
         school: body.school || null,
         area: body.area || null,
         curriculum: body.curriculum || 'Local',
         subject: body.subject || null,
         wanted_subjects: body.subject ? [body.subject] : [],
+        ambition: String(body.ambition || '').trim() || null,
         fee_per_class: Number(body.fee_per_class) || 0,
         parent_name: body.parent_name || null,
-        parent_phone: String(body.parent_phone).replace(/[^\d]/g, ''),
+        parent_occupation: String(body.parent_occupation || '').trim() || null,
+        parent_phone: phone,
         status: Number(body.fee_per_class) > 0 ? 'active' : 'pending',
       });
       return ok(res, { student_id: student.id, status: student.status });
@@ -407,12 +694,28 @@ async function handlePost(req, res, tid, r) {
     case 'student.update': {
       await mustStudent(tid, body.student_id, 'id');
       const patch = {};
-      for (const key of ['name', 'grade', 'school', 'area', 'curriculum', 'subject', 'parent_name']) {
+      for (const key of [
+        'name',
+        'call_name',
+        'grade',
+        'school',
+        'area',
+        'curriculum',
+        'subject',
+        'ambition',
+        'parent_name',
+        'parent_occupation',
+      ]) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (body.fee_per_class !== undefined) patch.fee_per_class = Number(body.fee_per_class) || 0;
       if (body.parent_phone !== undefined) {
-        patch.parent_phone = String(body.parent_phone).replace(/[^\d]/g, '');
+        // Point 3: editing a number is held to the same rule as entering one.
+        const phone = R.toLkMobile(body.parent_phone);
+        if (!phone) {
+          return bad(res, 'Enter a Sri Lankan mobile number: 9 digits starting with 7');
+        }
+        patch.parent_phone = phone;
       }
       if (!Object.keys(patch).length) return bad(res, 'Nothing to change');
       await db.update('students', patch, { id: `eq.${body.student_id}`, teacher_id: `eq.${tid}` });
@@ -546,49 +849,127 @@ async function handlePost(req, res, tid, r) {
       return ok(res, { code, link: result.link, status: result.status });
     }
 
-    /* ---- money ---- */
+    /* ---- money (point 11) ---- */
+
+    /**
+     * Record a payment: the whole bill, or any part of it.
+     *
+     * The amount is decided in the database, which clamps it to what is
+     * actually owed, so a mistyped extra zero can never create a credit. The
+     * receipt number comes back with it and goes to the parent, unless the
+     * teacher turned the receipt off.
+     */
     case 'payment.record': {
       const student = await mustStudent(tid, body.student_id, 'id,name,parent_phone,amount_due');
-      const amount = await db.rpc('record_payment', {
+      if (Number(student.amount_due) <= 0) return bad(res, 'Nothing is owed');
+
+      if (body.amount !== undefined && body.amount !== null && body.amount !== '') {
+        const asked = Number(body.amount);
+        if (!Number.isFinite(asked) || asked <= 0) return bad(res, 'Enter an amount');
+      }
+
+      const result = await db.rpc('record_payment', {
         p_teacher: tid,
         p_student: student.id,
         p_classes: body.classes ? Number(body.classes) : null,
-        p_amount: body.amount ? Number(body.amount) : null,
-        p_method: body.method === 'Cash' ? 'Cash' : body.method === 'Slip' ? 'Slip' : 'Bank transfer',
+        p_amount:
+          body.amount === undefined || body.amount === null || body.amount === ''
+            ? null
+            : Number(body.amount),
+        p_method: PAYMENT_METHODS.includes(body.method) ? body.method : 'Bank transfer',
+        p_paid_date: body.paid_date || null,
       });
-      const text = render('paid', { student: student.name, amount }, lang);
-      const result = await notifyParent({
-        tid,
-        student,
-        type: 'paid',
-        text,
-        feedText: FEED.paid({ amount }),
-        lang,
+
+      const receipt = R.receiptNo(result.receipt_no);
+      const amount = Number(result.amount);
+      const balance = Number(result.balance);
+
+      // The tick in the sheet is on by default, but a teacher who is standing
+      // next to the parent can turn it off.
+      let sent = { status: 'none', link: null };
+      if (body.send_receipt !== false) {
+        sent = await notifyParent({
+          tid,
+          student,
+          type: 'paid',
+          text: render('paid', { student: student.name, amount, receipt, balance }, lang),
+          feedText: FEED.paid({ amount, receipt }),
+          lang,
+        });
+      }
+
+      return ok(res, {
+        payment_id: result.payment_id,
+        amount,
+        balance,
+        full: Boolean(result.full),
+        receipt,
+        receipt_no: result.receipt_no,
+        link: sent.link || null,
+        status: sent.status,
       });
-      return ok(res, { amount: Number(amount), link: result.link, status: result.status });
+    }
+
+    /**
+     * Undo. Within the ten seconds the result screen offers it, and later from
+     * the student's payment history. The row is marked reversed, never
+     * deleted, so the history still explains the balance.
+     */
+    case 'payment.reverse': {
+      const result = await db.rpc('reverse_payment', {
+        p_teacher: tid,
+        p_payment: body.payment_id,
+      });
+      const student = await mustStudent(tid, result.student_id, 'id,name,parent_phone,amount_due');
+      await db.insert(
+        'events',
+        {
+          teacher_id: tid,
+          student_id: student.id,
+          type: 'paid',
+          text: FEED.reversed({ amount: Number(result.amount) }),
+        },
+        { returning: 'minimal' },
+      );
+      return ok(res, {
+        reversed: true,
+        amount: Number(result.amount),
+        balance: Number(student.amount_due),
+      });
     }
 
     case 'payment.confirm_slip': {
       // Rule 7.2.6: confirming a slip pays the full amount owed.
       const student = await mustStudent(tid, body.student_id, 'id,name,parent_phone,amount_due');
       if (Number(student.amount_due) <= 0) return bad(res, 'Nothing is owed');
-      const amount = await db.rpc('record_payment', {
+      const result = await db.rpc('record_payment', {
         p_teacher: tid,
         p_student: student.id,
         p_classes: null,
         p_amount: null,
         p_method: 'Slip',
+        p_paid_date: body.paid_date || null,
       });
-      const text = render('paid', { student: student.name, amount }, lang);
-      const result = await notifyParent({
+      const receipt = R.receiptNo(result.receipt_no);
+      const amount = Number(result.amount);
+      const sent = await notifyParent({
         tid,
         student,
         type: 'paid',
-        text,
-        feedText: FEED.paid({ amount }),
+        text: render('paid', { student: student.name, amount, receipt, balance: 0 }, lang),
+        feedText: FEED.paid({ amount, receipt }),
         lang,
       });
-      return ok(res, { amount: Number(amount), link: result.link, status: result.status });
+      return ok(res, {
+        payment_id: result.payment_id,
+        amount,
+        balance: Number(result.balance),
+        full: true,
+        receipt,
+        receipt_no: result.receipt_no,
+        link: sent.link,
+        status: sent.status,
+      });
     }
 
     /* ---- marks ---- */
@@ -754,6 +1135,13 @@ async function handlePost(req, res, tid, r) {
         patch.remind_after_days = Number(body.remind_after_days);
       }
       if (body.name) patch.name = body.name;
+      // Point 12: typed once here, then reused by every class held there.
+      if (body.own_place_name !== undefined) {
+        patch.own_place_name = String(body.own_place_name || '').trim() || 'My home';
+      }
+      if (body.own_place_area !== undefined) {
+        patch.own_place_area = String(body.own_place_area || '').trim() || null;
+      }
       if (!Object.keys(patch).length) return bad(res, 'Nothing to change');
       const [updated] = await db.update('teachers', patch, { id: `eq.${tid}` });
       delete updated.code_hash;

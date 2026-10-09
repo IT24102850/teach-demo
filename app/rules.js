@@ -140,6 +140,10 @@ export function sessionsOn(data, dateStr) {
         done: saved?.status === 'done',
         notified: Boolean(saved?.notified),
         absent: saved?.absent || [],
+        // Point 10: Scheduled / In progress / Ended comes from these two.
+        started_at: saved?.started_at || null,
+        ended_at: saved?.ended_at || null,
+        session_id: saved?.id || null,
         saved: saved || null,
       };
     })
@@ -270,7 +274,12 @@ export function incomeSummary(data, mode, anchor, today) {
     planned: perDay.reduce((a, d) => a + d.planned, 0),
     classesDone: done.length,
     classesTotal: all.length,
-    hours: done.reduce((a, s) => a + Number(s.cls.duration_hours), 0),
+    // Point 10: the hours really taught, falling back to the scheduled length
+    // for a class that was marked before Start / End existed.
+    hours: done.reduce((a, s) => {
+      const real = taughtMinutes(s);
+      return a + (real === null ? Number(s.cls.duration_hours) : real / 60);
+    }, 0),
     attendancePct: seats ? Math.round((present / seats) * 100) : 0,
     byClass: Object.values(byClass).sort((a, b) => b.income - a.income),
     today,
@@ -319,3 +328,303 @@ export function weekSessions(data, today) {
   const start = startOfWeek(today);
   return sessionsBetween(data, start, addDays(start, 6));
 }
+
+/* ===========================================================================
+   Plus App v2 rules.
+   These are the only place the new behaviour is defined. The server mirrors
+   them in api/_lib/rules.js, so the browser and the database never disagree.
+   =========================================================================== */
+
+/* ------------------------------------- point 3 · Sri Lankan mobile number -- */
+
+/**
+ * Turn anything a person can type into the one stored form, 947XXXXXXXX.
+ *
+ *   "077 123 4567"   -> "94771234567"   (the leading 0 is dropped)
+ *   "+94 77 123 4567"-> "94771234567"
+ *   "94771234567"    -> "94771234567"
+ *   "12345"          -> null            (not a Sri Lankan mobile)
+ *
+ * Nine digits starting with 7 is the whole rule: every Sri Lankan mobile
+ * prefix (70, 71, 72, 74, 75, 76, 77, 78) begins with one.
+ */
+export function toLkMobile(raw) {
+  const d = lkMobileDigits(raw);
+  return /^7\d{8}$/.test(d) ? `94${d}` : null;
+}
+
+/** The national part of whatever was typed: no country code, no leading 0. */
+export function lkMobileDigits(raw) {
+  let d = String(raw ?? '').replace(/\D/g, '');
+  if (d.startsWith('0094')) d = d.slice(4);
+  else if (d.startsWith('94') && d.length > 9) d = d.slice(2);
+  return d.replace(/^0+/, '').slice(0, 9);
+}
+
+/** Shown to people: +94 77 123 4567. Anything unrecognised is passed through. */
+export function formatLkMobile(stored) {
+  const d = lkMobileDigits(stored);
+  if (!/^7\d{8}$/.test(d)) return String(stored ?? '');
+  return `+94 ${d.slice(0, 2)} ${d.slice(2, 5)} ${d.slice(5)}`;
+}
+
+/** Spaced for the input box while typing: 77 123 4567. */
+export function groupLkMobile(raw) {
+  const d = lkMobileDigits(raw);
+  return [d.slice(0, 2), d.slice(2, 5), d.slice(5, 9)].filter(Boolean).join(' ');
+}
+
+/**
+ * Why the number is not acceptable yet, as an i18n key, or null when it is.
+ * `empty` is separated out so a field the person has not reached yet can stay
+ * quiet instead of shouting at them.
+ */
+export function lkMobileError(raw) {
+  const d = lkMobileDigits(raw);
+  if (!d) return 'empty';
+  if (!d.startsWith('7')) return 'tel_start7';
+  if (d.length !== 9) return 'tel_nine';
+  return null;
+}
+
+export const isLkMobile = (raw) => toLkMobile(raw) !== null;
+
+/* -------------------------------------------- point 13 · class time slots -- */
+
+/** Start chips: every half hour from 06:00 to 21:00. */
+export function startChoices(from = 6, to = 21) {
+  const out = [];
+  for (let m = from * 60; m <= to * 60; m += 30) out.push(fromMinutes(m));
+  return out;
+}
+
+export const DURATION_CHOICES = [1, 1.5, 2, 2.5, 3];
+
+export const fromMinutes = (total) => {
+  const m = ((Math.round(total) % 1440) + 1440) % 1440;
+  return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+};
+
+/** "4:00 PM" - the 12 hour clock the mock-ups use. */
+export function clock12(time) {
+  const total = minutesOf(time);
+  const h24 = Math.floor(total / 60) % 24;
+  const h = h24 % 12 || 12;
+  return `${h}:${pad(total % 60)} ${h24 < 12 ? 'AM' : 'PM'}`;
+}
+
+/** "2 h 30 m", or "2 h" when it is a whole number of hours. */
+export function durationLabel(hours) {
+  const total = Math.round(Number(hours) * 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (!h) return `${m} m`;
+  return m ? `${h} h ${m} m` : `${h} h`;
+}
+
+/** "4:00 PM – 6:30 PM" worked out from the start and the length. */
+export const slotLabel = (start, hours) =>
+  `${clock12(start)} – ${clock12(endTime(start, hours))}`;
+
+/** Start and end of a class in minutes from midnight. */
+export const classSpan = (cls) => {
+  const start = minutesOf(cls.start_time);
+  return { start, end: start + Math.round(Number(cls.duration_hours || 0) * 60) };
+};
+
+/**
+ * Touching is not overlapping: a class 6:30–7:30 does not clash with one that
+ * ends at 6:30.
+ */
+export const overlaps = (a, b) => a.start < b.end && b.start < a.end;
+
+/**
+ * Can these two ever fall on the same calendar day?
+ * `a` is the class being edited, as { days, once_date, start_date }.
+ */
+export function sharesDay(a, b) {
+  const aDays = a.once_date ? [weekday(a.once_date)] : a.days || [];
+  const bDays = b.once_date ? [weekday(b.once_date)] : b.days || [];
+
+  if (a.once_date && b.once_date) return a.once_date === b.once_date;
+
+  if (a.once_date || b.once_date) {
+    const date = a.once_date || b.once_date;
+    const repeating = a.once_date ? b : a;
+    if ((repeating.skips || []).includes(date)) return false;
+    if (repeating.start_date && date < repeating.start_date) return false;
+    return (repeating.days || []).includes(weekday(date));
+  }
+
+  return aDays.some((d) => bDays.includes(d));
+}
+
+/**
+ * The first class the draft would run into, or null.
+ * `draft` is { days, once_date, start_date, start_time, duration_hours, id }.
+ * A class is never compared with itself, so editing a class in place is safe.
+ */
+export function findClash(existing, draft) {
+  const span = classSpan(draft);
+  if (!Number.isFinite(span.start) || span.end <= span.start) return null;
+  return (
+    (existing || []).find(
+      (c) =>
+        c.id !== draft.id &&
+        c.active !== false &&
+        sharesDay(draft, c) &&
+        overlaps(span, classSpan(c)),
+    ) || null
+  );
+}
+
+/** The day a clash happens on, for the warning line. */
+export function clashDay(draft, cls, lang = 'en') {
+  if (draft.once_date) return dateTitle(draft.once_date, lang);
+  if (cls.once_date) return dateTitle(cls.once_date, lang);
+  const shared = (draft.days || []).find((d) => (cls.days || []).includes(d));
+  return shared === undefined ? '' : DAY_LONG[shared];
+}
+
+/** A one-off class may not be put in the past (point 13). */
+export const slotInPast = (draft, today, nowMinutes) => {
+  if (!draft.once_date) return false;
+  if (draft.once_date < today) return true;
+  if (draft.once_date > today) return false;
+  return minutesOf(draft.start_time) < Number(nowMinutes ?? 0);
+};
+
+/** Travel warning: two classes in different areas less than 30 minutes apart. */
+export const TRAVEL_GAP = 30;
+export function travelWarning(existing, draft) {
+  const span = classSpan(draft);
+  const area = String(draft.area || draft.place || '').trim().toLowerCase();
+  if (!area) return null;
+  return (
+    (existing || []).find((c) => {
+      if (c.id === draft.id || c.active === false || !sharesDay(draft, c)) return false;
+      const other = String(c.area || c.place || '').trim().toLowerCase();
+      if (!other || other === area) return false;
+      const b = classSpan(c);
+      const gap = span.start >= b.end ? span.start - b.end : b.start - span.end;
+      return gap >= 0 && gap < TRAVEL_GAP;
+    }) || null
+  );
+}
+
+/* ---------------------------------------- point 12 · individual or group -- */
+
+export const CLASS_KINDS = ['individual', 'group'];
+export const VENUE_TYPES = ['area', 'institute', 'own_place'];
+
+/**
+ * The stored kind wins. Classes created before this release have no `kind`,
+ * so they fall back to the old rule 6.2 guess from the student count - that
+ * way an old class still reads correctly instead of showing a blank.
+ */
+export const classKind = (cls) =>
+  cls?.kind === 'individual' || cls?.kind === 'group'
+    ? cls.kind
+    : (cls?.student_ids || []).length === 1
+      ? 'individual'
+      : 'group';
+
+/** "Bright Minds Institute · Nugegoda", "My home · Nugegoda", or "Nugegoda". */
+export function venueLabel(cls, { ownPlaceName = 'My home' } = {}) {
+  const area = cls?.area || cls?.place || '';
+  if (cls?.venue_type === 'institute' && cls.venue_name) {
+    return area ? `${cls.venue_name} · ${area}` : cls.venue_name;
+  }
+  if (cls?.venue_type === 'own_place') return area ? `${ownPlaceName} · ${area}` : ownPlaceName;
+  return area;
+}
+
+/**
+ * Point 12's "Done when": an individual class cannot hold two students, and a
+ * group class cannot hold one, or be saved without somewhere to be.
+ * Returns an i18n key, or null when the draft is good.
+ */
+export function classDraftError(draft) {
+  const count = (draft.student_ids || []).length;
+  if (!count) return 'pick_students';
+  if (draft.kind === 'individual' && count !== 1) return 'individual_one_student';
+  if (draft.kind === 'group' && count < 2) return 'group_two_students';
+
+  if (draft.kind === 'group') {
+    if (!VENUE_TYPES.includes(draft.venue_type)) return 'pick_venue';
+    if (draft.venue_type === 'institute' && !String(draft.venue_name || '').trim()) {
+      return 'enter_institute';
+    }
+    if (!String(draft.area || '').trim()) return 'enter_area';
+  } else if (!String(draft.area || '').trim()) {
+    return 'enter_area';
+  }
+
+  if (!draft.once_date && !(draft.days || []).length) return 'pick_days';
+  if (!draft.start_time) return 'pick_time';
+  if (!(Number(draft.duration_hours) > 0)) return 'pick_time';
+  return null;
+}
+
+/* ------------------------------------- point 10 · class start and end ----- */
+
+/** Scheduled -> In progress -> Ended (or Cancelled by "Skip this day"). */
+export function sessionState(session) {
+  if (!session) return 'scheduled';
+  if (session.cancelled) return 'cancelled';
+  if (session.done) return 'ended';
+  if (session.started_at && !session.ended_at) return 'running';
+  return 'scheduled';
+}
+
+/** 00:42:18 - how long the class has been running, or how long it ran. */
+export function elapsed(fromIso, toIso) {
+  const from = Date.parse(fromIso || '');
+  if (!Number.isFinite(from)) return '00:00:00';
+  const to = toIso ? Date.parse(toIso) : Date.now();
+  const s = Math.max(0, Math.floor((to - from) / 1000));
+  return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(pad).join(':');
+}
+
+/** The minutes actually taught, used for "hours taught" on the dashboard. */
+export function taughtMinutes(session) {
+  const from = Date.parse(session?.started_at || '');
+  const to = Date.parse(session?.ended_at || '');
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
+  return Math.round((to - from) / 60000);
+}
+
+/** "4:02 – 6:31 PM" from the real timestamps. */
+export function realRange(session) {
+  if (!session?.started_at || !session?.ended_at) return '';
+  const f = (iso) => {
+    const d = new Date(iso);
+    return `${d.getHours() % 12 || 12}:${pad(d.getMinutes())}`;
+  };
+  const end = new Date(session.ended_at);
+  return `${f(session.started_at)} – ${f(session.ended_at)} ${end.getHours() < 12 ? 'AM' : 'PM'}`;
+}
+
+/* ------------------------------------------------ point 11 · part payment -- */
+
+/**
+ * What a payment leaves behind. `amount` is clamped to what is owed, so a
+ * mistyped 60000 on a 6000 bill can never create a credit.
+ */
+export function paymentOutcome(due, amount) {
+  const owed = Math.max(0, Number(due) || 0);
+  const paid = Math.min(Math.max(0, Number(amount) || 0), owed);
+  return { paid, balance: Math.round((owed - paid) * 100) / 100, full: paid >= owed && owed > 0 };
+}
+
+/** The teacher may not confirm an amount of nothing (point 11). */
+export function paymentError(due, amount) {
+  const owed = Math.max(0, Number(due) || 0);
+  if (owed <= 0) return 'nothing_owed';
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) return 'enter_amount';
+  return null;
+}
+
+/** #0012 - the receipt number the parent sees. */
+export const receiptNo = (n) => `#${String(Number(n) || 0).padStart(4, '0')}`;

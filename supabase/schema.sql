@@ -24,6 +24,10 @@ create table if not exists teachers (
   code_lookup        text        unique,                  -- hmac(code, pepper): indexed lookup
   code_hash          text,                                -- scrypt(code, code_salt + pepper)
   code_salt          text,
+  -- Point 12: the teacher's own teaching place, typed once in Settings and
+  -- reused by every group class held there.
+  own_place_name     text        not null default 'My home',
+  own_place_area     text,
   created_at         timestamptz not null default now()
 );
 
@@ -43,6 +47,11 @@ create table if not exists students (
   parent_phone      text,
   status            text        not null default 'active'
                      check (status in ('pending','active','archived')),
+  -- Point 8: the four-step join form asks for these too.
+  call_name         text,                                  -- what to call them in the app
+  ambition          text,                                  -- "what do you want to be?"
+  parent_occupation text,
+  photo_path        text,                                  -- storage object path
   slip_path         text,                                  -- storage object path
   slip_sent_at      timestamptz,
   last_reminded_at  timestamptz,
@@ -60,6 +69,14 @@ create table if not exists classes (
   grade           int,
   title           text        not null,
   place           text,
+  -- Point 12: the kind is stored, not guessed from how many students were
+  -- picked, and where the class is depends on the kind.
+  kind            text        not null default 'group'
+                    check (kind in ('individual','group')),
+  venue_type      text        not null default 'area'
+                    check (venue_type in ('area','institute','own_place')),
+  venue_name      text,                                    -- institute name
+  area            text,                                    -- Nugegoda, Dehiwala, ...
   days            smallint[]  not null default '{}',       -- 0=Mon .. 6=Sun
   start_time      time        not null,
   duration_hours  numeric(4,2) not null default 1,
@@ -101,6 +118,10 @@ create table if not exists sessions (
                  check (status in ('planned','done','cancelled')),
   notified_at  timestamptz,
   done_at      timestamptz,
+  -- Point 10: the real clock times, so "hours taught" is what happened and
+  -- not what was scheduled.
+  started_at   timestamptz,
+  ended_at     timestamptz,
   created_at   timestamptz not null default now(),
   unique (class_id, session_date)
 );
@@ -137,11 +158,18 @@ create table if not exists payments (
   student_id uuid        not null references students(id) on delete cascade,
   amount     numeric(10,2) not null,
   method     text        not null default 'Bank transfer'
-               check (method in ('Bank transfer','Cash','Slip')),
+               check (method in ('Bank transfer','Cash','Online','Slip')),
   paid_date  date        not null default current_date,
   note       text,
+  -- Point 11: the number on the parent's receipt, counted per teacher.
+  receipt_no int,
+  -- Point 11: Undo marks the row reversed. A payment is never silently
+  -- deleted, so the history always explains the balance.
+  reversed_at timestamptz,
   created_at timestamptz not null default now()
 );
+create unique index if not exists payments_receipt_uq
+  on payments(teacher_id, receipt_no) where receipt_no is not null;
 create index if not exists payments_student_idx on payments(student_id, paid_date);
 
 -- ------------------------------------------------------------------ marks --
@@ -259,6 +287,73 @@ alter table classes add  constraint classes_repeat_ck
   check (once_date is not null or coalesce(array_length(days, 1), 0) >= 1);
 
 
+-- ---------------------------------------------------- Plus App v2 columns --
+-- Point 12: the teacher's own teaching place, typed once and reused.
+alter table teachers add column if not exists own_place_name text not null default 'My home';
+alter table teachers add column if not exists own_place_area text;
+
+-- Point 8: the answers the four-step join form collects.
+alter table students add column if not exists call_name         text;
+alter table students add column if not exists ambition          text;
+alter table students add column if not exists parent_occupation text;
+alter table students add column if not exists photo_path        text;
+
+-- Point 12: individual or group, and where the class is held.
+alter table classes add column if not exists kind       text;
+alter table classes add column if not exists venue_type text;
+alter table classes add column if not exists venue_name text;
+alter table classes add column if not exists area       text;
+
+-- An existing class keeps the meaning it already had on screen: one student
+-- was shown as "Individual", more than one as a group.
+update classes c
+   set kind = case
+                when (select count(*) from class_students cs where cs.class_id = c.id) = 1
+                then 'individual' else 'group'
+              end
+ where c.kind is null;
+update classes set venue_type = 'area' where venue_type is null;
+update classes set area = place where area is null;
+
+alter table classes alter column kind       set default 'group';
+alter table classes alter column venue_type set default 'area';
+alter table classes alter column kind       set not null;
+alter table classes alter column venue_type set not null;
+
+alter table classes drop constraint if exists classes_kind_check;
+alter table classes add  constraint classes_kind_check
+  check (kind in ('individual','group'));
+alter table classes drop constraint if exists classes_venue_type_check;
+alter table classes add  constraint classes_venue_type_check
+  check (venue_type in ('area','institute','own_place'));
+
+-- Point 10: when the class really started and ended.
+alter table sessions add column if not exists started_at timestamptz;
+alter table sessions add column if not exists ended_at   timestamptz;
+
+-- Point 11: receipts, the Online method, and Undo.
+alter table payments add column if not exists receipt_no  int;
+alter table payments add column if not exists reversed_at timestamptz;
+
+alter table payments drop constraint if exists payments_method_check;
+alter table payments add  constraint payments_method_check
+  check (method in ('Bank transfer','Cash','Online','Slip'));
+
+create unique index if not exists payments_receipt_uq
+  on payments(teacher_id, receipt_no) where receipt_no is not null;
+
+-- Number the payments that were taken before receipts existed.
+update payments p
+   set receipt_no = n.rn
+  from (
+    select id, row_number() over (partition by teacher_id order by created_at, id) as rn
+      from payments
+     where receipt_no is null
+  ) n
+ where n.id = p.id
+   and p.receipt_no is null;
+
+
 -- ===========================================================================
 --  Views - the business rules of sections 7.2 / 7.3 / 7.4, computed in SQL so
 --  every view of the app shows exactly the same numbers.
@@ -269,7 +364,7 @@ alter table classes add  constraint classes_repeat_ck
 create or replace view student_dues as
 with pay as (
   select student_id, sum(amount) as paid
-  from payments group by student_id
+  from payments where reversed_at is null group by student_id
 ), ch as (
   select c.student_id, c.teacher_id, c.amount, c.charge_date,
          sum(c.amount) over (partition by c.student_id
@@ -287,6 +382,7 @@ select
 from ch
 left join pay on pay.student_id = ch.student_id
 group by ch.student_id, ch.teacher_id;
+
 
 -- The last 8 attendance results as a 'PPAPPAPA' string, oldest first
 -- (rule 7.3: attendance %, streak and "at risk" all read this window).
@@ -358,7 +454,7 @@ select teacher_id,
        sum(charged)              as charged
 from (
   select teacher_id, date_trunc('month', paid_date)   as month, sum(amount) as collected, 0 as charged
-    from payments group by teacher_id, 2
+    from payments where reversed_at is null group by teacher_id, 2
   union all
   select teacher_id, date_trunc('month', charge_date) as month, 0 as collected, sum(amount) as charged
     from charges  group by teacher_id, 2
@@ -366,19 +462,41 @@ from (
 group by teacher_id, month
 order by month;
 
+-- Point 10: the hours the teacher actually taught, from the real clock times,
+-- falling back to the scheduled length for a class recorded the old way.
+create or replace view teacher_taught as
+select s.teacher_id,
+       s.id          as session_id,
+       s.class_id,
+       s.session_date,
+       s.started_at,
+       s.ended_at,
+       case
+         when s.started_at is not null and s.ended_at > s.started_at
+         then round(extract(epoch from (s.ended_at - s.started_at)) / 3600.0, 2)
+         else c.duration_hours
+       end as hours
+from sessions s
+join classes c on c.id = s.class_id
+where s.status = 'done';
+
 
 -- ===========================================================================
 --  Transactional writes - run as one statement so a half-saved class can
 --  never happen (rule 7.2.2: attendance + charges + events together).
 -- ===========================================================================
 
--- Finish a class: mark the session done, write one attendance row per student,
--- charge every student who was present, and raise an event per absent student.
+drop function if exists finish_class(uuid, uuid, date, uuid[]);
+
+-- Finish a class: mark the session done, store the real start and end times,
+-- write one attendance row per student, and charge everyone who was present.
 create or replace function finish_class(
   p_teacher uuid,
   p_class   uuid,
   p_date    date,
-  p_absent  uuid[]
+  p_absent  uuid[],
+  p_started timestamptz default null,
+  p_ended   timestamptz default null
 ) returns uuid
 language plpgsql security definer
 set search_path = public, pg_temp as $$
@@ -394,10 +512,16 @@ begin
     raise exception 'class not found for this teacher';
   end if;
 
-  insert into sessions (class_id, teacher_id, session_date, status, done_at)
-  values (p_class, p_teacher, p_date, 'done', now())
+  insert into sessions (class_id, teacher_id, session_date, status, done_at, started_at, ended_at)
+  values (p_class, p_teacher, p_date, 'done', now(),
+          p_started, coalesce(p_ended, now()))
   on conflict (class_id, session_date)
-    do update set status = 'done', done_at = now()
+    do update set status     = 'done',
+                  done_at    = now(),
+                  -- Keep a start time that was already recorded by "Start
+                  -- class"; only fill it in when there is none.
+                  started_at = coalesce(sessions.started_at, excluded.started_at),
+                  ended_at   = coalesce(excluded.ended_at, sessions.ended_at, now())
   returning id into v_session;
 
   -- Re-marking a session replaces the previous result cleanly.
@@ -426,19 +550,50 @@ begin
   return v_session;
 end $$;
 
--- Record a payment for the N oldest unpaid classes (or an exact amount).
-create or replace function record_payment(
+-- Point 10: "Start class" records the real start time without finishing
+-- anything, so the session can sit in progress for as long as it takes.
+create or replace function start_class(
   p_teacher uuid,
-  p_student uuid,
-  p_classes int,
-  p_amount  numeric,
-  p_method  text
-) returns numeric
+  p_class   uuid,
+  p_date    date
+) returns timestamptz
 language plpgsql security definer
 set search_path = public, pg_temp as $$
 declare
-  v_amount numeric;
-  v_due    numeric;
+  v_started timestamptz;
+begin
+  if not exists (select 1 from classes where id = p_class and teacher_id = p_teacher) then
+    raise exception 'class not found for this teacher';
+  end if;
+
+  insert into sessions (class_id, teacher_id, session_date, status, started_at)
+  values (p_class, p_teacher, p_date, 'planned', now())
+  on conflict (class_id, session_date)
+    -- Tapping Start twice must not restart the clock.
+    do update set started_at = coalesce(sessions.started_at, now())
+  returning started_at into v_started;
+
+  return v_started;
+end $$;
+
+
+drop function if exists record_payment(uuid, uuid, int, numeric, text);
+
+create or replace function record_payment(
+  p_teacher   uuid,
+  p_student   uuid,
+  p_classes   int,
+  p_amount    numeric,
+  p_method    text,
+  p_paid_date date default null
+) returns json
+language plpgsql security definer
+set search_path = public, pg_temp as $$
+declare
+  v_amount  numeric;
+  v_due     numeric;
+  v_receipt int;
+  v_id      uuid;
 begin
   if not exists (select 1 from students where id = p_student and teacher_id = p_teacher) then
     raise exception 'student not found for this teacher';
@@ -451,7 +606,8 @@ begin
     v_amount := p_amount;
   elsif p_classes is not null then
     -- Sum the p_classes oldest unpaid charges, so a past fee change stays correct.
-    with pay as (select coalesce(sum(amount), 0) paid from payments where student_id = p_student),
+    with pay as (select coalesce(sum(amount), 0) paid
+                   from payments where student_id = p_student and reversed_at is null),
          ch  as (select c.amount,
                         sum(c.amount) over (order by c.charge_date, c.id) cum
                    from charges c where c.student_id = p_student)
@@ -463,13 +619,22 @@ begin
     v_amount := v_due;
   end if;
 
+  -- Point 11: a part payment is kept as typed; an over-payment is clamped to
+  -- what is owed, so a slipped digit can never create a credit.
   v_amount := least(greatest(v_amount, 0), v_due);
   if v_amount <= 0 then
     raise exception 'nothing is owed';
   end if;
 
-  insert into payments (teacher_id, student_id, amount, method)
-  values (p_teacher, p_student, v_amount, p_method);
+  select coalesce(max(receipt_no), 0) + 1 into v_receipt
+    from payments where teacher_id = p_teacher;
+
+  insert into payments (teacher_id, student_id, amount, method, paid_date, receipt_no)
+  values (p_teacher, p_student, v_amount,
+          coalesce(p_method, 'Bank transfer'),
+          coalesce(p_paid_date, (now() at time zone 'Asia/Colombo')::date),
+          v_receipt)
+  returning id into v_id;
 
   -- Nothing owed any more: clear the slip and the reminder note (rule 7.2.5).
   if v_amount >= v_due then
@@ -478,7 +643,43 @@ begin
      where id = p_student;
   end if;
 
-  return v_amount;
+  return json_build_object(
+    'payment_id', v_id,
+    'amount',     v_amount,
+    'receipt_no', v_receipt,
+    'balance',    v_due - v_amount,
+    'full',       v_amount >= v_due
+  );
+end $$;
+
+-- Point 11: Undo. The row stays, marked reversed, so the student's payment
+-- history still explains every change to the balance.
+create or replace function reverse_payment(
+  p_teacher uuid,
+  p_payment uuid
+) returns json
+language plpgsql security definer
+set search_path = public, pg_temp as $$
+declare
+  v_row payments%rowtype;
+begin
+  select * into v_row from payments
+   where id = p_payment and teacher_id = p_teacher;
+  if v_row.id is null then
+    raise exception 'payment not found for this teacher';
+  end if;
+  if v_row.reversed_at is not null then
+    raise exception 'that payment was already undone';
+  end if;
+
+  update payments set reversed_at = now() where id = p_payment;
+
+  return json_build_object(
+    'payment_id', v_row.id,
+    'amount',     v_row.amount,
+    'student_id', v_row.student_id,
+    'receipt_no', v_row.receipt_no
+  );
 end $$;
 
 
@@ -488,6 +689,10 @@ end $$;
 insert into storage.buckets (id, name, public) values ('slips',  'slips',  false)
   on conflict (id) do nothing;
 insert into storage.buckets (id, name, public) values ('papers', 'papers', false)
+  on conflict (id) do nothing;
+-- Point 8: the optional student photo from the join form, already shrunk to a
+-- small square on the phone before it was sent.
+insert into storage.buckets (id, name, public) values ('photos', 'photos', false)
   on conflict (id) do nothing;
 
 

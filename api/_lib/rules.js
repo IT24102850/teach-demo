@@ -156,3 +156,140 @@ export function rankPeers(rows, selfId, by) {
       streak: streak(r.hist),
     }));
 }
+
+/* ===========================================================================
+   Plus App v2 rules, server side.
+   The same functions live in /app/rules.js for the browser. The browser's
+   copy is there to keep the form helpful; this copy is the one that decides,
+   because a request can always arrive without going through the form.
+   =========================================================================== */
+
+/* ------------------------------------- point 3 · Sri Lankan mobile number -- */
+
+/** The national part of whatever was sent: no country code, no leading zero. */
+export function lkMobileDigits(raw) {
+  let d = String(raw ?? '').replace(/\D/g, '');
+  if (d.startsWith('0094')) d = d.slice(4);
+  else if (d.startsWith('94') && d.length > 9) d = d.slice(2);
+  return d.replace(/^0+/, '').slice(0, 9);
+}
+
+/** 947XXXXXXXX, or null when it is not a Sri Lankan mobile (point 3). */
+export function toLkMobile(raw) {
+  const d = lkMobileDigits(raw);
+  return /^7\d{8}$/.test(d) ? `94${d}` : null;
+}
+
+export function formatLkMobile(stored) {
+  const d = lkMobileDigits(stored);
+  if (!/^7\d{8}$/.test(d)) return String(stored ?? '');
+  return `+94 ${d.slice(0, 2)} ${d.slice(2, 5)} ${d.slice(5)}`;
+}
+
+/* -------------------------------------------- point 13 · class time slots -- */
+
+export const minutesOf = (t) => {
+  const [h, m] = hhmm(t).split(':').map(Number);
+  return (Number(h) || 0) * 60 + (Number(m) || 0);
+};
+
+export const classSpan = (cls) => {
+  const start = minutesOf(cls.start_time);
+  return { start, end: start + Math.round(Number(cls.duration_hours || 0) * 60) };
+};
+
+/** Touching is not overlapping (point 13). */
+export const overlaps = (a, b) => a.start < b.end && b.start < a.end;
+
+export function sharesDay(a, b) {
+  if (a.once_date && b.once_date) return a.once_date === b.once_date;
+  if (a.once_date || b.once_date) {
+    const date = a.once_date || b.once_date;
+    const repeating = a.once_date ? b : a;
+    if ((repeating.skips || []).includes(date)) return false;
+    if (repeating.start_date && date < repeating.start_date) return false;
+    return (repeating.days || []).includes(weekday(date));
+  }
+  return (a.days || []).some((d) => (b.days || []).includes(d));
+}
+
+/** The first class the draft runs into, or null. Never compares with itself. */
+export function findClash(existing, draft) {
+  const span = classSpan(draft);
+  if (!Number.isFinite(span.start) || span.end <= span.start) return null;
+  return (
+    (existing || []).find(
+      (c) =>
+        c.id !== draft.id &&
+        c.active !== false &&
+        sharesDay(draft, c) &&
+        overlaps(span, classSpan(c)),
+    ) || null
+  );
+}
+
+/* ---------------------------------------- point 12 · individual or group -- */
+
+export const CLASS_KINDS = ['individual', 'group'];
+export const VENUE_TYPES = ['area', 'institute', 'own_place'];
+
+export const classKind = (cls) =>
+  cls?.kind === 'individual' || cls?.kind === 'group'
+    ? cls.kind
+    : (cls?.student_ids || []).length === 1
+      ? 'individual'
+      : 'group';
+
+/**
+ * Point 12's rule, as a message the API can return verbatim.
+ * Returns an English sentence, or null when the draft is good.
+ */
+export function classDraftError(draft) {
+  const count = (draft.student_ids || []).length;
+  if (!count) return 'Pick at least one student';
+  if (draft.kind === 'individual' && count !== 1) {
+    return 'An individual class has exactly one student';
+  }
+  if (draft.kind === 'group' && count < 2) return 'A group class needs two or more students';
+  if (draft.kind === 'group') {
+    if (!VENUE_TYPES.includes(draft.venue_type)) return 'Say where the class is';
+    if (draft.venue_type === 'institute' && !String(draft.venue_name || '').trim()) {
+      return 'Enter the institute name';
+    }
+  }
+  if (!String(draft.area || '').trim()) return 'Enter the area';
+  if (!draft.once_date && !(draft.days || []).length) return 'Pick at least one day';
+  if (!draft.start_time) return 'Pick a start time';
+  if (!(Number(draft.duration_hours) > 0)) return 'Pick how long the class runs';
+  return null;
+}
+
+/** "Bright Minds Institute · Nugegoda", "My home · Nugegoda", or "Nugegoda". */
+export function venueLabel(cls, { ownPlaceName = 'My home' } = {}) {
+  const area = cls?.area || cls?.place || '';
+  if (cls?.venue_type === 'institute' && cls.venue_name) {
+    return area ? `${cls.venue_name} · ${area}` : cls.venue_name;
+  }
+  if (cls?.venue_type === 'own_place') return area ? `${ownPlaceName} · ${area}` : ownPlaceName;
+  return area;
+}
+
+/* ------------------------------------- point 10 · class start and end ----- */
+
+/** Minutes actually taught, from the real timestamps, or null. */
+export function taughtMinutes(session) {
+  const from = Date.parse(session?.started_at || '');
+  const to = Date.parse(session?.ended_at || '');
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
+  return Math.round((to - from) / 60000);
+}
+
+/* ------------------------------------------------ point 11 · part payment -- */
+
+export function paymentOutcome(due, amount) {
+  const owed = Math.max(0, Number(due) || 0);
+  const paid = Math.min(Math.max(0, Number(amount) || 0), owed);
+  return { paid, balance: Math.round((owed - paid) * 100) / 100, full: paid >= owed && owed > 0 };
+}
+
+export const receiptNo = (n) => `#${String(Number(n) || 0).padStart(4, '0')}`;
