@@ -297,9 +297,15 @@ export const stepLabel = (current, total, name) =>
  * shows the green or pink line underneath. Everything it does is also done
  * again on the server, so the field is a help, not a gate.
  */
-export function telField(id, labelText, { value = '', required = true, hint = true } = {}) {
+export function telField(
+  id,
+  labelText,
+  { value = '', required = true, hint = true, error = null } = {},
+) {
   const shown = groupLkMobile(value);
-  const problem = value ? lkMobileError(value) : 'empty';
+  // `error` is the screen saying "Next was pressed and this is still wrong",
+  // which is why an empty box can be told off here but not while typing.
+  const problem = error || (value ? lkMobileError(value) : 'empty');
   return `<label class="fld">
     <span class="lbl">${esc(labelText)}${required ? ` <em>${esc(t('required'))}</em>` : ''}</span>
     <div class="tel">
@@ -307,12 +313,12 @@ export function telField(id, labelText, { value = '', required = true, hint = tr
       <input id="${attr(id)}" type="tel" inputmode="numeric" autocomplete="tel-national"
         data-tel="1" maxlength="13" placeholder="77 123 4567"
         aria-label="${attr(labelText)}" value="${attr(shown)}"${
-          problem ? '' : ' class="ok"'
+          error ? ' class="bad" aria-invalid="true"' : problem ? '' : ' class="ok"'
         }>
     </div>
     ${hint ? `<p class="fld-hint">${esc(t('tel_hint'))}</p>` : ''}
-    <p class="fld-note${problem ? '' : ' ok'}" data-tel-note="${attr(id)}">${
-      problem ? '' : esc(t('tel_ok'))
+    <p class="fld-note${problem ? (error ? ' no' : '') : ' ok'}" data-tel-note="${attr(id)}">${
+      problem ? (error ? esc(t(error === 'empty' ? 'tel_nine' : error)) : '') : esc(t('tel_ok'))
     }</p>
   </label>`;
 }

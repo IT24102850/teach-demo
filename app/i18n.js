@@ -124,7 +124,7 @@ const EN = {
   /* teacher · students */
   add_student: 'Add student',
   student_name: 'Student name',
-  parent_whatsapp: 'Parent WhatsApp (947…)',
+  parent_whatsapp: "Parent's WhatsApp number",
   name_phone_required: 'Name and WhatsApp number are required',
   student_added: 'Student added',
   new_signup: 'New sign-up',
@@ -509,7 +509,7 @@ const TA = {
 
   add_student: 'மாணவர் சேர்',
   student_name: 'மாணவர் பெயர்',
-  parent_whatsapp: 'பெற்றோர் WhatsApp (947…)',
+  parent_whatsapp: 'பெற்றோரின் WhatsApp எண்',
   name_phone_required: 'பெயரும் WhatsApp எண்ணும் தேவை',
   student_added: 'மாணவர் சேர்க்கப்பட்டார்',
   new_signup: 'புதிய பதிவு',

@@ -77,16 +77,16 @@ async function main() {
       ),
       db.rows("select count(*) n from information_schema.views where table_schema='public'"),
       db.rows(
-        "select count(*) n from information_schema.routines where routine_schema='public' and routine_name in ('finish_class','record_payment')",
+        "select count(*) n from information_schema.routines where routine_schema='public' and routine_name in ('finish_class','start_class','record_payment','reverse_payment')",
       ),
-      db.rows("select count(*) n from storage.buckets where id in ('slips','papers')"),
+      db.rows("select count(*) n from storage.buckets where id in ('slips','papers','photos')"),
     ]);
 
     console.log('\napplied.');
     console.log(`  tables    ${tables[0].n}`);
     console.log(`  views     ${views[0].n}`);
-    console.log(`  functions ${functions[0].n} of 2`);
-    console.log(`  buckets   ${buckets[0].n} of 2`);
+    console.log(`  functions ${functions[0].n} of 4`);
+    console.log(`  buckets   ${buckets[0].n} of 3`);
     console.log('\nNext: node --env-file=.env scripts/db-verify.mjs\n');
   } finally {
     db.end();

@@ -124,10 +124,43 @@ export function meetsOn(cls, dateStr, skips) {
 }
 
 /**
+ * Point 1: work out a date's sessions once and reuse the answer.
+ *
+ * The month grid asks for 42 dates and the week grid for 7, on every redraw,
+ * and each answer has to walk every class. The cache is keyed on the data
+ * object itself, so a reload - which replaces `S.data` - starts a fresh one
+ * and no stale session can survive. `forgetSessions` is for the one case that
+ * changes the data in place: loading more sessions for a month further out.
+ */
+const sessionCache = new WeakMap();
+
+export function forgetSessions(data) {
+  if (data) sessionCache.delete(data);
+}
+
+function cacheFor(data) {
+  let map = sessionCache.get(data);
+  if (!map) {
+    map = new Map();
+    sessionCache.set(data, map);
+  }
+  return map;
+}
+
+/**
  * Every session on one date, with the saved result attached if there is one.
  * Sessions are generated, never stored in advance (section 4).
  */
 export function sessionsOn(data, dateStr) {
+  const cache = cacheFor(data);
+  const hit = cache.get(dateStr);
+  if (hit) return hit;
+  const built = buildSessionsOn(data, dateStr);
+  cache.set(dateStr, built);
+  return built;
+}
+
+function buildSessionsOn(data, dateStr) {
   const skips = data.skips || skipSet(data.classes);
   return data.classes
     .filter((c) => meetsOn(c, dateStr, skips))

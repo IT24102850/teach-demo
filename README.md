@@ -55,10 +55,14 @@ Browser (PWA)  ──►  /api/* on Vercel  ──►  Supabase PostgreSQL + Sto
 
 ## 1. What works
 
-**Teacher** — Today's classes · Day/Week/Month calendar on an hour grid with a
-now-line and side-by-side overlapping classes · recurring and one-off classes ·
-cancel a single day · one-tap attendance (everyone present, tap the absent) ·
-fee ledger with FIFO allocation, days late, part-payments, cash/bank, bank-slip
+**Teacher** — Today's classes · Google-style calendar: Month with an agenda
+under it, Day and Week on an hour grid with a now-line, side-by-side
+overlapping classes, a tappable empty slot and a "+" button · recurring and
+one-off classes, individual or group, at an institute or your own place ·
+a time-slot picker with a clash check · edit one day or all days · cancel a
+single day · Start class / End class with a live timer, real clock times and
+an absent message to each parent · fee ledger with FIFO allocation, days late,
+part payments, cash / bank transfer / online, receipts, Undo, bank-slip
 confirmation · marks and progress reports · income dashboard by day/week/month
 with per-class breakdown · test-paper shop with profit · sign-up links and
 family codes · English/Tamil · Night/Day/Auto.
@@ -71,7 +75,14 @@ feed · switch between children on one code · switch to the Student view.
 **Student** — up next · streak, average, present % · 90 % attendance goal ·
 this week's classes · every mark with a chart · practice papers via signed links.
 
-**Public** — a sign-up form at `/join?t=<key>` that needs no login.
+**Public** — a sign-up form at `/join?t=<key>` that needs no login: four short
+steps with a progress bar, Back and Submit fixed at the bottom, a check page,
+and an optional photo shrunk on the phone before it is sent.
+
+**Everywhere** — the app is locked at one zoom level and installs full screen ·
+one spacing scale and one height for every field and button · a full-screen
+code keypad · phone numbers are entered as `77 123 4567` beside a fixed `+94`
+and stored as `94771234567`.
 
 Everything a teacher does writes an event, which is what the family sees and
 what gets sent to WhatsApp.
@@ -112,6 +123,33 @@ Either way you get every table, the views that hold the business rules, the two
 transactional functions, the two private storage buckets, and row level
 security switched on. Both are safe to run again later — `db:push` sends the
 file as a single implicit transaction, so a failure changes nothing.
+
+### Step 2a · Upgrading a database from v1
+
+If the tables are already there from an earlier release, you do **not** need to
+start again. `supabase/schema.sql` brings an old database up to date on its
+own — every change is written so that running it twice is safe — so
+`npm run db:push` is all it takes.
+
+To apply only the new part, run `supabase/migrations/002-app-v2.sql` in the
+Supabase SQL editor instead. It adds:
+
+| Table      | What is new                                                        |
+| ---------- | ------------------------------------------------------------------ |
+| `teachers` | `own_place_name`, `own_place_area` — your own teaching place        |
+| `students` | `call_name`, `ambition`, `parent_occupation`, `photo_path`          |
+| `classes`  | `kind`, `venue_type`, `venue_name`, `area` — individual or group    |
+| `sessions` | `started_at`, `ended_at` — when the class really ran                |
+| `payments` | `receipt_no`, `reversed_at`, and `Online` as a method               |
+
+plus `start_class()` and `reverse_payment()`, a `photos` bucket, and a wider
+`record_payment()` that answers with the receipt. Existing rows are filled in:
+a class with one student becomes `individual`, everything else `group`, and
+old payments are numbered in the order they were taken.
+
+**Run it before you deploy the new code.** The app reads these columns, so the
+old schema with the new code shows blank venues and a broken Paid button.
+`npm run db:verify` names anything that is missing.
 
 ### Step 3 · Collect your keys
 
@@ -465,9 +503,9 @@ There are three suites. The first needs nothing; the other two drive the real
 database and a running deployment.
 
 ```bash
-npm test          # 141 tests · no database, no network
-npm run check:db  #  99 checks · the SQL rules, against your real database
-npm run check:live #201 checks · the whole API and everything the browser loads
+npm test          # 291 tests · no database, no network
+npm run check:db  # the SQL rules, against your real database
+npm run check:live # the whole API and everything the browser loads
 ```
 
 `check:db` and `check:live` each build their own throwaway teacher, students,
@@ -492,8 +530,9 @@ check says so instead of reporting sixty misleading failures; turn it off under
 
 ### What `npm test` covers
 
-140 tests, no database and no network. They cover the checklist in section 11 of
-the build guide, plus the handlers and every screen:
+291 tests, no database and no network. They cover the checklist in section 11
+of the build guide, plus the handlers, every screen, and the improvement plan
+point by point:
 
 * **Calendar** — weekly classes on the right days only, not before the start
   date; one-off classes once; a cancelled day gone and the others intact;
@@ -531,6 +570,34 @@ the build guide, plus the handlers and every screen:
   teacher id from the session, one absence event per absent student, payments
   capped at what is owed, the fee-reminder preview byte-identical to what is
   sent, and the cron job refusing a caller without `CRON_SECRET`.
+
+* **The improvement plan** (`plan.test.js`) — each of the fifteen points, named
+  after the point it checks and asserting that point's own "Done when" line.
+  Where a point is about the page rather than a function, the test reads the
+  stylesheet or the HTML: that the viewport is locked and every input is 16px
+  (point 4), that there is one spacing scale and one height per control
+  (point 6), that nothing render-blocking waits on Google Fonts (point 1).
+* **The sign-up form, clicked through** (`flow-join.test.js`) — the real
+  `join.js` boots against a small DOM and a stubbed `/api`, and the test walks
+  the four steps the way a family would: Next on an empty step explains what is
+  missing, a bad number is refused with the right reason, Back keeps every
+  answer, a failed Submit offers Try again with nothing lost, and the request
+  that finally goes out carries `94771234567`.
+* **The teacher's app, clicked through** (`flow-app.test.js`) — the real
+  `main.js` boots the same way. Nothing calls a screen function directly: every
+  step is a tap, so the action table, the state changes and the redraw are all
+  exercised. It signs in on the lock screen (including a wrong code), opens the
+  month agenda, builds a class that clashes and one that only touches, starts
+  and ends a class with an absent student, and records a part payment then
+  undoes it. It also fires two taps on Confirm payment in the same tick and
+  checks that only one payment is made.
+
+Those last two run on a hand-written DOM in `tests/dom.js`, not jsdom — this
+project has no dependencies. It keeps `innerHTML` as a string and finds buttons
+with a regular expression, which is enough to drive what the app is made of: a
+tap dispatches an action, the action changes state, the state is drawn as HTML.
+It does no layout and no CSS, so anything that needs those is checked by
+reading the stylesheet instead.
 
 ### What `check:db` covers
 
@@ -678,6 +745,50 @@ in SQL after uploading to the `papers` bucket, and the Open button works.
 
 **The hour grid starts at the earliest class.** It expands to fit whatever is
 on screen rather than always showing 00:00–24:00.
+
+### From the improvement plan
+
+**Point 14 was never finished.** The note stops after the letter "G". Nothing
+has been built for it; say what it was and it can be.
+
+**Zoom is locked, which costs something.** Point 4 asked for a fixed screen, so
+the viewport is locked and every input is 16px. Someone who relies on pinch
+zoom has lost it. Safari ignores `user-scalable=no` in a browser tab, so the
+lock is only reliable in the installed app — which is the other half of point 4.
+If this turns out to matter, the fix is a "Larger text" setting rather than
+unlocking the page, and nothing here stands in the way of adding one.
+
+**The fonts are still Google's.** Point 1 asked for self-hosted, subset fonts.
+They are no longer render-blocking — the page paints in the system font and
+swaps when Manrope arrives, which is the part that was costing a blank screen —
+but the files still come from `fonts.gstatic.com`. Downloading and subsetting
+them is a build step this repository does not have yet.
+
+**Long lists are not virtualised.** Point 1 suggested drawing only the rows on
+screen. With a few dozen students that costs more complexity than it saves, so
+the student list renders in full. It is worth doing above a few hundred.
+
+**The timings in point 1 are not measured here.** "First screen under two
+seconds on 4G" and "any tap under 0.1 second" need a real phone. What the tests
+check is the work that makes them possible: nothing render-blocking, a skeleton
+instead of a blank page, a debounced search, memoised sessions, and the login
+screen split from the rest of the app. Measure the rest with Chrome DevTools →
+Performance at 4× CPU and Fast 3G, as the plan says.
+
+**The photo is stored but never shown.** Point 8's photo is optional, shrunk to
+a 320px square on the phone, and kept in a private `photos` bucket. No screen
+displays it yet, and the student screen does not offer to change it.
+
+**"This day only" makes a copy.** Editing one day of a repeating class creates
+a one-off class on that date and cancels the repeat for that day. The effect is
+right and the history stays honest, but the new class is a separate row, so
+editing the repeat afterwards does not touch it.
+
+**Receipt numbers are per teacher and count up.** They are allocated as
+`max + 1` inside `record_payment`, which is fine at this scale. Two payments
+recorded in the same instant would collide on the unique index and the second
+would fail rather than be mis-numbered; a sequence per teacher is the fix if
+that ever happens.
 
 ---
 

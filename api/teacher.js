@@ -321,23 +321,34 @@ async function handlePost(req, res, tid, r) {
       // Point 12: the kind is what the teacher chose, not a guess from how
       // many students were picked, and the venue question that goes with that
       // kind must have been answered.
+      const kind = R.CLASS_KINDS.includes(body.kind)
+        ? body.kind
+        : R.classKind({ student_ids: studentIds });
+      // An individual class is always at an area; only a group is asked where.
+      const venueType =
+        kind === 'individual'
+          ? 'area'
+          : R.VENUE_TYPES.includes(body.venue_type)
+            ? body.venue_type
+            : 'area';
+
       const draft = {
-        kind: R.CLASS_KINDS.includes(body.kind)
-          ? body.kind
-          : R.classKind({ student_ids: studentIds }),
-        venue_type: R.VENUE_TYPES.includes(body.venue_type) ? body.venue_type : 'area',
+        kind,
+        venue_type: venueType,
         venue_name: body.venue_name,
-        area: body.area || body.place || owned[0]?.area || '',
+        // Point 12: at the teacher's own place the area comes from Settings -
+        // that is the whole point of saving it there. Anywhere else it is
+        // what was typed, falling back to the student's own area.
+        area:
+          venueType === 'own_place'
+            ? teacher.own_place_area || body.area || ''
+            : body.area || body.place || owned[0]?.area || '',
         student_ids: studentIds,
         days,
         once_date: once,
         start_time: body.start_time,
-        duration_hours: Number(body.duration_hours) || 0,
+        duration_hours: Number(body.duration_hours) || 1,
       };
-      if (draft.kind === 'individual') draft.venue_type = 'area';
-      if (draft.venue_type === 'own_place' && !draft.area) {
-        draft.area = teacher.own_place_area || '';
-      }
 
       const problem = R.classDraftError(draft);
       if (problem) return bad(res, problem);
@@ -390,14 +401,23 @@ async function handlePost(req, res, tid, r) {
           ? cls.days || []
           : [...new Set((body.days || []).map(Number).filter((d) => d >= 0 && d <= 6))];
 
+      const kind = R.CLASS_KINDS.includes(body.kind) ? body.kind : R.classKind(cls);
+      const venueType =
+        kind === 'individual'
+          ? 'area'
+          : R.VENUE_TYPES.includes(body.venue_type)
+            ? body.venue_type
+            : cls.venue_type || 'area';
+
       const draft = {
         id: cls.id,
-        kind: R.CLASS_KINDS.includes(body.kind) ? body.kind : R.classKind(cls),
-        venue_type: R.VENUE_TYPES.includes(body.venue_type)
-          ? body.venue_type
-          : cls.venue_type || 'area',
+        kind,
+        venue_type: venueType,
         venue_name: body.venue_name === undefined ? cls.venue_name : body.venue_name,
-        area: (body.area === undefined ? cls.area || cls.place : body.area) || '',
+        area:
+          venueType === 'own_place'
+            ? teacher.own_place_area || body.area || cls.area || ''
+            : (body.area === undefined ? cls.area || cls.place : body.area) || '',
         student_ids: cls.student_ids,
         days,
         once_date: once,
@@ -405,7 +425,6 @@ async function handlePost(req, res, tid, r) {
         start_time: body.start_time || R.hhmm(cls.start_time),
         duration_hours: Number(body.duration_hours ?? cls.duration_hours) || 0,
       };
-      if (draft.kind === 'individual') draft.venue_type = 'area';
 
       const problem = R.classDraftError(draft);
       if (problem) return bad(res, problem);

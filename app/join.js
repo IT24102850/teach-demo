@@ -14,7 +14,8 @@
 import { api } from './api.js';
 import { t, setLang } from './i18n.js';
 import { loadFonts } from './fonts.js';
-import { formatLkMobile, groupLkMobile, lkMobileError, toLkMobile } from './rules.js';
+import { TOTAL, problems as stepProblems, stepOk as isStepOk, suggestCallName } from './join-steps.js';
+import { formatLkMobile, groupLkMobile, toLkMobile } from './rules.js';
 import {
   actionButton,
   button,
@@ -34,9 +35,6 @@ import {
 } from './ui.js';
 
 const host = document.getElementById('join');
-
-const TOTAL = 4;
-const STEP_NAMES = ['step_about', 'step_classes', 'step_parent', 'step_check'];
 
 const form = {
   key: '',
@@ -72,32 +70,9 @@ const form = {
 
 /* --------------------------------------------------------- step checks --- */
 
-/**
- * What is wrong with the step the person is on, as { fieldId: messageKey }.
- * Next only ever checks the current step, so an unanswered question three
- * steps away never blocks the one in front of them (point 8).
- */
-function problems(step = form.step) {
-  const bad = {};
-  if (step === 1) {
-    if (form.name.trim().length < 2) bad['j-name'] = 'enter_name';
-    if (!form.call_name.trim()) bad['j-call'] = 'enter_name';
-    const g = Number(form.grade);
-    if (!Number.isInteger(g) || g < 1 || g > 13) bad['j-grade'] = 'pick_grade';
-  }
-  if (step === 2) {
-    if (form.curricula.length > 1 && !form.curriculum) bad['curriculum'] = 'curriculum';
-    if (!form.wanted.length) bad.subjects = 'pick_subject';
-  }
-  if (step === 3) {
-    if (form.parent_name.trim().length < 2) bad['j-parent'] = 'enter_parent_name';
-    const tel = lkMobileError(form.phone);
-    if (tel) bad['j-phone'] = tel === 'empty' ? 'tel_nine' : tel;
-  }
-  return bad;
-}
-
-const stepOk = (step) => Object.keys(problems(step)).length === 0;
+/* The rules live in join-steps.js, where they can be tested on their own. */
+const problems = (step = form.step) => stepProblems(form, step);
+const stepOk = (step) => isStepOk(form, step);
 
 /** Read whatever is on screen into `form`, so Back and Next keep every answer. */
 function capture() {
@@ -116,11 +91,7 @@ function capture() {
   const tel = read('j-phone');
   if (tel !== null) form.phone = tel;
 
-  // "What should we call you?" follows the first name until it is edited.
-  if (!form.callTouched) {
-    const first = form.name.trim().split(/\s+/)[0] || '';
-    if (first && form.call_name !== first) form.call_name = first;
-  }
+  form.call_name = suggestCallName(form);
 }
 
 /* ------------------------------------------------------------- screens --- */
@@ -208,7 +179,10 @@ function stepParent(bad) {
       invalid: Boolean(bad['j-parent']),
     })}${errorNote('j-parent', bad)}
 
-    ${telField('j-phone', t('parent_whatsapp'), { value: form.phone })}
+    ${telField('j-phone', t('parent_whatsapp'), {
+      value: form.phone,
+      error: bad['j-phone'] || null,
+    })}
 
     ${field('j-job', `${t('parent_occupation')} (${t('optional')})`, {
       value: form.parent_occupation,
@@ -533,6 +507,5 @@ function teacherKey() {
 
 boot();
 
-/* Exported for the tests: the step rules are the heart of this screen. */
-export { form, problems, stepOk, TOTAL };
-export { groupLkMobile };
+/* Exported so a console can poke at the wizard while it is open. */
+export { form, groupLkMobile };

@@ -82,9 +82,49 @@ const checks = [
       ).map((r) => r.routine_name);
       t.ok(fns.includes('finish_class'), 'function finish_class');
       t.ok(fns.includes('record_payment'), 'function record_payment');
+      t.ok(fns.includes('start_class'), 'function start_class (point 10)');
+      t.ok(fns.includes('reverse_payment'), 'function reverse_payment (point 11)');
 
-      const buckets = await db.rows("select id from storage.buckets where id in ('slips','papers')");
-      t.equal(buckets.length, 2, 'both storage buckets exist');
+      // The columns the v2 screens read. Without them the app loads and then
+      // shows blanks, which is much harder to diagnose than this line.
+      const columns = (
+        await db.rows(`
+          select table_name || '.' || column_name as col
+            from information_schema.columns
+           where table_schema = 'public'
+             and (table_name, column_name) in (
+               ('teachers','own_place_name'), ('teachers','own_place_area'),
+               ('students','call_name'), ('students','ambition'),
+               ('students','parent_occupation'), ('students','photo_path'),
+               ('classes','kind'), ('classes','venue_type'),
+               ('classes','venue_name'), ('classes','area'),
+               ('sessions','started_at'), ('sessions','ended_at'),
+               ('payments','receipt_no'), ('payments','reversed_at')
+             )`)
+      ).map((r) => r.col);
+      for (const col of [
+        'teachers.own_place_name',
+        'teachers.own_place_area',
+        'students.call_name',
+        'students.ambition',
+        'students.parent_occupation',
+        'students.photo_path',
+        'classes.kind',
+        'classes.venue_type',
+        'classes.venue_name',
+        'classes.area',
+        'sessions.started_at',
+        'sessions.ended_at',
+        'payments.receipt_no',
+        'payments.reversed_at',
+      ]) {
+        t.ok(columns.includes(col), `column ${col}`);
+      }
+
+      const buckets = await db.rows(
+        "select id from storage.buckets where id in ('slips','papers','photos')",
+      );
+      t.equal(buckets.length, 3, 'all three storage buckets exist');
     },
   },
 
@@ -231,12 +271,12 @@ const checks = [
       `);
 
       const [two] = await db.rows(
-        `select record_payment('${TEACHER}', '${KASUN}', 2, null, 'Cash') as amount`,
+        `select (record_payment('${TEACHER}', '${KASUN}', 2, null, 'Cash')->>'amount')::numeric as amount`,
       );
       t.equal(Number(two.amount), 3000, 'two classes at the fee they were charged at');
 
       const [rest] = await db.rows(
-        `select record_payment('${TEACHER}', '${KASUN}', 99, null, 'Cash') as amount`,
+        `select (record_payment('${TEACHER}', '${KASUN}', 99, null, 'Cash')->>'amount')::numeric as amount`,
       );
       t.equal(Number(rest.amount), 800, 'asking for more classes than exist pays only what is left');
 
@@ -252,6 +292,79 @@ const checks = [
   },
 
   {
+    name: 'start_class records a start time without finishing the class (point 10)',
+    async run(db, t) {
+      const date = shift(-4);
+      const [first] = await db.rows(
+        `select start_class('${TEACHER}', '${CLASS}', '${date}') as at`,
+      );
+      t.ok(Boolean(first.at), 'a start time is recorded');
+
+      const [second] = await db.rows(
+        `select start_class('${TEACHER}', '${CLASS}', '${date}') as at`,
+      );
+      t.equal(String(second.at), String(first.at), 'pressing Start twice does not restart it');
+
+      const [row] = await db.rows(
+        `select status, started_at, ended_at from sessions
+          where class_id = '${CLASS}' and session_date = '${date}'`,
+      );
+      t.equal(row.status, 'planned', 'starting a class does not finish it');
+      t.equal(row.ended_at, null, 'and leaves no end time');
+
+      await db.query(
+        `select finish_class('${TEACHER}', '${CLASS}', '${date}', '{}'::uuid[], null, now())`,
+      );
+      const [done] = await db.rows(
+        `select status, started_at, ended_at from sessions
+          where class_id = '${CLASS}' and session_date = '${date}'`,
+      );
+      t.equal(String(done.started_at), String(first.at), 'ending it keeps the recorded start');
+      t.ok(Boolean(done.ended_at), 'and records the end');
+      t.equal(done.status, 'done', 'and the class is done');
+    },
+  },
+
+  {
+    name: 'a part payment leaves the rest owing, and Undo puts it back (point 11)',
+    async run(db, t) {
+      await db.query(
+        `insert into charges (teacher_id, student_id, amount, charge_date)
+         values ('${TEACHER}', '${KASUN}', 6000, '${shift(-5)}')`,
+      );
+      const [part] = await db.rows(
+        `select record_payment('${TEACHER}', '${KASUN}', null, 2000, 'Online') as r`,
+      );
+      const paid = typeof part.r === 'string' ? JSON.parse(part.r) : part.r;
+      t.equal(Number(paid.amount), 2000, 'the amount is taken as typed');
+      t.equal(Number(paid.balance), 4000, '2,000 off 6,000 leaves 4,000');
+      t.ok(Number(paid.receipt_no) > 0, 'and it has a receipt number');
+
+      const [owing] = await db.rows(
+        `select amount_due from student_dues where student_id = '${KASUN}'`,
+      );
+      t.equal(Number(owing.amount_due), 4000, 'the ledger agrees');
+
+      await db.query(`select reverse_payment('${TEACHER}', '${paid.payment_id}')`);
+      const [back] = await db.rows(
+        `select amount_due from student_dues where student_id = '${KASUN}'`,
+      );
+      t.equal(Number(back.amount_due), 6000, 'Undo restores the exact previous balance');
+
+      const [kept] = await db.rows(
+        `select reversed_at from payments where id = '${paid.payment_id}'`,
+      );
+      t.ok(Boolean(kept.reversed_at), 'the row is kept, marked reversed, never deleted');
+
+      await t.throws(
+        () => db.query(`select reverse_payment('${TEACHER}', '${paid.payment_id}')`),
+        /already/,
+        'and it cannot be undone twice',
+      );
+    },
+  },
+
+  {
     name: 'record_payment never takes more than the balance',
     async run(db, t) {
       await db.query(
@@ -259,7 +372,7 @@ const checks = [
          values ('${TEACHER}', '${KASUN}', 1000, '${shift(-5)}')`,
       );
       const [over] = await db.rows(
-        `select record_payment('${TEACHER}', '${KASUN}', null, 999999, 'Cash') as amount`,
+        `select (record_payment('${TEACHER}', '${KASUN}', null, 999999, 'Cash')->>'amount')::numeric as amount`,
       );
       t.equal(Number(over.amount), 1000, 'an over-payment is clipped to the amount owed');
     },

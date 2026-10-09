@@ -146,8 +146,8 @@ async function setup() {
   STU_C = students.find((s) => s.name === 'Zara Kulatunga').id;
 
   const classes = await db.insert('classes', [
-    { teacher_id: TID, subject: 'Maths', curriculum: 'Local', grade: 11, title: 'Live class today', place: 'Nugegoda', days: [weekday(TODAY)], start_time: '16:00', duration_hours: 1.5, start_date: addDays(TODAY, -30) },
-    { teacher_id: TID, subject: 'Science', curriculum: 'Cambridge', grade: 11, title: 'Live class later', place: 'Dehiwala', days: [weekday(addDays(TODAY, 3))], start_time: '17:00', duration_hours: 1, start_date: addDays(TODAY, -30) },
+    { teacher_id: TID, subject: 'Maths', curriculum: 'Local', grade: 11, title: 'Live class today', place: 'Nugegoda', kind: 'group', venue_type: 'area', area: 'Nugegoda', days: [weekday(TODAY)], start_time: '16:00', duration_hours: 1.5, start_date: addDays(TODAY, -30) },
+    { teacher_id: TID, subject: 'Science', curriculum: 'Cambridge', grade: 11, title: 'Live class later', place: 'Dehiwala', kind: 'individual', venue_type: 'area', area: 'Dehiwala', days: [weekday(addDays(TODAY, 3))], start_time: '17:00', duration_hours: 1, start_date: addDays(TODAY, -30) },
   ]);
   CLASS_TODAY = classes.find((c) => c.title === 'Live class today').id;
   CLASS_LATER = classes.find((c) => c.title === 'Live class later').id;
@@ -398,16 +398,53 @@ async function checkBackend() {
   ok('the sign-up link carries this teacher key', invite.json.link.endsWith(`/join?t=live-${STAMP}`));
   ok('and a WhatsApp link to send it', invite.json.whatsapp.startsWith('https://wa.me/'));
 
-  section('taking attendance');
+  section('taking attendance: Scheduled, In progress, Ended (point 10)');
+  const started = await teacher.fetch('/api/teacher?r=attendance.start', {
+    method: 'POST',
+    body: { class_id: CLASS_TODAY, date: TODAY },
+  });
+  equal('Start class is accepted', started.status, 200);
+  ok('and records a start time', Boolean(started.json.started_at));
+
+  const restarted = await teacher.fetch('/api/teacher?r=attendance.start', {
+    method: 'POST',
+    body: { class_id: CLASS_TODAY, date: TODAY },
+  });
+  equal('pressing Start twice does not restart the clock', restarted.json.started_at, started.json.started_at);
+
+  const endedAt = new Date().toISOString();
   const finish = await teacher.fetch('/api/teacher?r=attendance.finish', {
     method: 'POST',
-    body: { class_id: CLASS_TODAY, date: TODAY, absent: [STU_A] },
+    body: { class_id: CLASS_TODAY, date: TODAY, absent: [STU_A], ended_at: endedAt },
   });
   equal('the class saves', finish.status, 200);
   equal('one absent', finish.json.absent, 1);
   equal('two present', finish.json.present, 2);
   equal('one message queued', finish.json.messages.length, 1);
   ok('with a WhatsApp link for the absent parent', finish.json.messages[0].link?.includes('94770009001'));
+  ok('the absent message names the teacher and the class', /was absent from today/.test(finish.json.messages[0].text || ''));
+  equal('the start time is kept from Start class', finish.json.started_at, started.json.started_at);
+  ok('and the length taught is recorded', Number(finish.json.taught_minutes) >= 0);
+
+  const fixed = await teacher.fetch('/api/teacher?r=attendance.fix_times', {
+    method: 'POST',
+    body: {
+      class_id: CLASS_TODAY,
+      date: TODAY,
+      started_at: new Date(Date.parse(endedAt) - 7_200_000).toISOString(),
+      ended_at: endedAt,
+    },
+  });
+  equal('the times can be corrected afterwards', fixed.status, 200);
+  equal('to exactly two hours', fixed.json.taught_minutes, 120);
+  equal(
+    'and a backwards correction is refused',
+    (await teacher.fetch('/api/teacher?r=attendance.fix_times', {
+      method: 'POST',
+      body: { class_id: CLASS_TODAY, date: TODAY, started_at: endedAt, ended_at: new Date(Date.parse(endedAt) - 60_000).toISOString() },
+    })).status,
+    400,
+  );
 
   const after = (await teacher.fetch('/api/teacher?r=bootstrap')).json;
   const a2 = after.students.find((s) => s.id === STU_A);
@@ -471,6 +508,7 @@ async function checkBackend() {
     body: { student_id: STU_A, classes: 2, method: 'Cash' },
   });
   equal('paying 2 classes takes 3,000', pay.json.amount, 3000);
+  ok('and comes back with a receipt number', /^#\d{4,}$/.test(pay.json.receipt || ''));
   equal(
     'leaving 3,000',
     (await teacher.fetch('/api/teacher?r=bootstrap')).json.students.find((s) => s.id === STU_A).amount_due,
@@ -480,6 +518,33 @@ async function checkBackend() {
     'a fee reminder for someone who owes nothing is refused',
     (await teacher.fetch('/api/teacher?r=message.fee', { method: 'POST', body: { student_id: STU_B } })).status,
     400,
+  );
+
+  section('part payments, receipts and Undo (point 11)');
+  const part = await teacher.fetch('/api/teacher?r=payment.record', {
+    method: 'POST',
+    body: { student_id: STU_A, amount: 1000, method: 'Online', send_receipt: false },
+  });
+  equal('a part payment is taken as typed', part.json.amount, 1000);
+  equal('and leaves the rest owing', part.json.balance, 2000);
+  equal('a zero amount is refused', (await teacher.fetch('/api/teacher?r=payment.record', { method: 'POST', body: { student_id: STU_A, amount: 0 } })).status, 400);
+
+  const undone = await teacher.fetch('/api/teacher?r=payment.reverse', {
+    method: 'POST',
+    body: { payment_id: part.json.payment_id },
+  });
+  equal('Undo is accepted', undone.status, 200);
+  equal('and restores the exact balance', undone.json.balance, 3000);
+  ok(
+    'the reversed receipt is still on the record',
+    (await teacher.fetch('/api/teacher?r=bootstrap')).json.payments.some(
+      (x) => x.id === part.json.payment_id && x.reversed_at,
+    ),
+  );
+  equal(
+    'and it cannot be undone twice',
+    (await teacher.fetch('/api/teacher?r=payment.reverse', { method: 'POST', body: { payment_id: part.json.payment_id } })).status,
+    500,
   );
 
   section('bank slips');
@@ -496,6 +561,7 @@ async function checkBackend() {
   ok('as a signed, time-limited URL', /token=/.test(slip.json.url || ''));
   const confirm = await teacher.fetch('/api/teacher?r=payment.confirm_slip', { method: 'POST', body: { student_id: STU_A } });
   equal('confirming the slip pays the whole balance', confirm.json.amount, 3000);
+  ok('with its own receipt number', /^#\d{4,}$/.test(confirm.json.receipt || ''));
   equal(
     'and clears the balance',
     (await teacher.fetch('/api/teacher?r=bootstrap')).json.students.find((s) => s.id === STU_A).amount_due,
@@ -532,10 +598,50 @@ async function checkBackend() {
   section('classes can be created, skipped and retired');
   const made = await teacher.fetch('/api/teacher?r=class.create', {
     method: 'POST',
-    body: { subject: 'Maths', curriculum: 'Local', grade: 11, place: 'Kotte', student_ids: [STU_A, STU_B], days: [0, 2], start_time: '09:00', duration_hours: 1 },
+    body: { kind: 'group', venue_type: 'institute', venue_name: 'Live Institute', area: 'Kotte', subject: 'Maths', curriculum: 'Local', grade: 11, student_ids: [STU_A, STU_B], days: [0, 2], start_time: '09:00', duration_hours: 1 },
   });
   equal('a class is created', made.status, 200);
   equal('and named by its size', made.json.title, 'Grade 11 Maths small group');
+
+  section('individual or group, and where (point 12)');
+  equal(
+    'an individual class cannot hold two students',
+    (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'individual', subject: 'Maths', area: 'Kotte', student_ids: [STU_A, STU_B], days: [1], start_time: '09:00', duration_hours: 1 } })).status,
+    400,
+  );
+  equal(
+    'a group class cannot hold one',
+    (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'group', venue_type: 'own_place', subject: 'Maths', area: 'Kotte', student_ids: [STU_A], days: [1], start_time: '09:00', duration_hours: 1 } })).status,
+    400,
+  );
+  equal(
+    'a group at an institute needs the name',
+    (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'group', venue_type: 'institute', subject: 'Maths', area: 'Kotte', student_ids: [STU_A, STU_B], days: [1], start_time: '09:00', duration_hours: 1 } })).status,
+    400,
+  );
+
+  section('the clash check (point 13)');
+  const clash = await teacher.fetch('/api/teacher?r=class.create', {
+    method: 'POST',
+    body: { kind: 'group', venue_type: 'own_place', subject: 'Science', area: 'Kotte', student_ids: [STU_A, STU_B], days: [0], start_time: '09:30', duration_hours: 1 },
+  });
+  equal('an overlap is refused', clash.status, 409);
+  ok('and the class in the way is named', /Grade 11 Maths/.test(clash.json.error || ''));
+  equal(
+    'touching is not overlapping',
+    (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'group', venue_type: 'own_place', subject: 'Science', area: 'Kotte', student_ids: [STU_A, STU_B], days: [0], start_time: '10:00', duration_hours: 1 } })).status,
+    200,
+  );
+  equal(
+    '"Save anyway" lets a deliberate overlap through',
+    (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'group', venue_type: 'own_place', subject: 'Science', area: 'Kotte', student_ids: [STU_A, STU_B], days: [0], start_time: '09:30', duration_hours: 1, allow_clash: true } })).status,
+    200,
+  );
+  equal(
+    'editing a class does not clash with itself',
+    (await teacher.fetch('/api/teacher?r=class.update', { method: 'POST', body: { class_id: made.json.class_id, start_time: '09:00', duration_hours: 1.5 } })).status,
+    200,
+  );
   equal('without students it is refused', (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { subject: 'Maths', days: [0], start_time: '09:00', student_ids: [] } })).status, 400);
   equal('without a day it is refused', (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { subject: 'Maths', days: [], start_time: '09:00', student_ids: [STU_A] } })).status, 400);
   equal("someone else's student is refused", (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { subject: 'Maths', days: [0], start_time: '09:00', student_ids: ['00000000-0000-4000-8000-0000000000ff'] } })).status, 403);
@@ -559,12 +665,27 @@ async function checkBackend() {
   ok('and no internal ids', !('id' in joinConfig.json.teacher));
   equal('a stale link is a 404', (await anon.fetch('/api/join?r=config&t=nope')).status, 404);
 
-  equal('a form with no name is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: { t: `live-${STAMP}`, parent_phone: '94770009003' } })).status, 400);
-  equal('a form with no phone is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: { t: `live-${STAMP}`, name: 'Live Joiner' } })).status, 400);
-  const submitted = await anon.fetch('/api/join?r=submit', {
-    method: 'POST',
-    body: { t: `live-${STAMP}`, name: 'Live Joiner', grade: '10', school: 'A School', subjects: ['Maths', 'Ballet'], curriculum: 'Edexcel', parent_name: 'Joiner Parent', parent_phone: '+94 77 000 9003' },
+  const goodForm = (over = {}) => ({
+    t: `live-${STAMP}`,
+    name: 'Live Joiner',
+    call_name: 'Live',
+    grade: 10,
+    school: 'A School',
+    subjects: ['Maths', 'Ballet'],
+    curriculum: 'Edexcel',
+    ambition: 'Doctor',
+    parent_name: 'Joiner Parent',
+    parent_occupation: 'Engineer',
+    parent_phone: '+94 77 000 9003',
+    ...over,
   });
+  equal('a form with no name is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: goodForm({ name: '' }) })).status, 400);
+  equal('a form with no phone is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: goodForm({ parent_phone: '' }) })).status, 400);
+  equal('a landline is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: goodForm({ parent_phone: '0112345678' }) })).status, 400);
+  equal('no grade is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: goodForm({ grade: 0 }) })).status, 400);
+  equal('no parent name is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: goodForm({ parent_name: '' }) })).status, 400);
+  equal('no subject is refused', (await anon.fetch('/api/join?r=submit', { method: 'POST', body: goodForm({ subjects: [] }) })).status, 400);
+  const submitted = await anon.fetch('/api/join?r=submit', { method: 'POST', body: goodForm() });
   equal('a good form is accepted', submitted.status, 200);
 
   const withPending = (await teacher.fetch('/api/teacher?r=bootstrap')).json;

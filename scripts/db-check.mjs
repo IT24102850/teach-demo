@@ -85,7 +85,11 @@ async function build() {
     subject: 'Maths',
     grade: 11,
     title: 'Grade 11 Maths small group',
-    place: 'Nugegoda',
+    place: 'Bright Minds Institute · Nugegoda',
+    kind: 'group',
+    venue_type: 'institute',
+    venue_name: 'Bright Minds Institute',
+    area: 'Nugegoda',
     days: [0, 2],
     start_time: '16:00',
     duration_hours: 1.5,
@@ -141,6 +145,12 @@ async function checkStructure() {
   );
   await raises('record_payment exists and guards the teacher', /student not found/, () =>
     db.rpc('record_payment', { p_teacher: A, p_student: A, p_classes: 1, p_amount: null, p_method: 'Cash' }),
+  );
+  await raises('start_class exists and guards the teacher', /class not found/, () =>
+    db.rpc('start_class', { p_teacher: A, p_class: CLASS, p_date: TODAY }),
+  );
+  await raises('reverse_payment exists and guards the teacher', /payment not found/, () =>
+    db.rpc('reverse_payment', { p_teacher: A, p_payment: A }),
   );
 }
 
@@ -224,6 +234,37 @@ async function checkFinishClass() {
 
   equal('the absent student owes nothing for it', (await dues(A))?.amount_due ?? 0, 0);
 
+  section('start_class and the real clock times (point 10)');
+  await db.remove('sessions', { class_id: `eq.${CLASS}` });
+  const startedAt = await db.rpc('start_class', { p_teacher: TID, p_class: CLASS, p_date: date });
+  equal('Start class records a start time', Boolean(startedAt), true);
+  const restarted = await db.rpc('start_class', { p_teacher: TID, p_class: CLASS, p_date: date });
+  equal('pressing Start twice does not restart the clock', restarted, startedAt);
+  const running = await db.selectOne('sessions', {
+    class_id: `eq.${CLASS}`,
+    session_date: `eq.${date}`,
+    select: 'status,started_at,ended_at',
+  });
+  equal('the class is not finished by starting it', running.status, 'planned');
+  equal('and has no end time yet', running.ended_at, null);
+
+  await db.rpc('finish_class', {
+    p_teacher: TID,
+    p_class: CLASS,
+    p_date: date,
+    p_absent: [],
+    p_started: null,
+    p_ended: new Date().toISOString(),
+  });
+  const ended = await db.selectOne('sessions', {
+    class_id: `eq.${CLASS}`,
+    session_date: `eq.${date}`,
+    select: 'status,started_at,ended_at',
+  });
+  equal('ending it keeps the start time that was already there', ended.started_at, startedAt);
+  equal('and records an end time', Boolean(ended.ended_at), true);
+  equal('and the class is done', ended.status, 'done');
+
   section('finish_class can be re-run without doubling the money');
   await db.rpc('finish_class', { p_teacher: TID, p_class: CLASS, p_date: date, p_absent: [] });
   const again = await db.select('sessions', { class_id: `eq.${CLASS}`, session_date: `eq.${date}` });
@@ -253,12 +294,15 @@ async function checkPayment() {
   const two = await db.rpc('record_payment', {
     p_teacher: TID, p_student: A, p_classes: 2, p_amount: null, p_method: 'Cash',
   });
-  equal('2 classes pays the two oldest charges', two, 3000);
+  equal('2 classes pays the two oldest charges', Number(two.amount), 3000);
+  equal('and it comes back with a receipt number', Number(two.receipt_no) > 0, true);
+  equal('with the balance that is left', Number(two.balance), 800);
 
   const rest = await db.rpc('record_payment', {
     p_teacher: TID, p_student: A, p_classes: 99, p_amount: null, p_method: 'Cash',
   });
-  equal('asking for more classes than exist pays what is left', rest, 800);
+  equal('asking for more classes than exist pays what is left', Number(rest.amount), 800);
+  equal('which settles it', rest.full, true);
   equal('nothing is owed now', (await dues(A)).amount_due, 0);
 
   await raises('paying again is refused', /nothing is owed/, () =>
@@ -274,7 +318,30 @@ async function checkPayment() {
   const over = await db.rpc('record_payment', {
     p_teacher: TID, p_student: A, p_classes: null, p_amount: 999999, p_method: 'Cash',
   });
-  equal('an over-payment is clipped to the balance', over, 1000);
+  equal('an over-payment is clipped to the balance', Number(over.amount), 1000);
+
+  /* Point 11: a part payment, and Undo. */
+  await clearMoney(A);
+  await db.insert(
+    'charges',
+    { teacher_id: TID, student_id: A, amount: 6000, charge_date: addDays(TODAY, -5) },
+    { returning: 'minimal' },
+  );
+  const part = await db.rpc('record_payment', {
+    p_teacher: TID, p_student: A, p_classes: null, p_amount: 2000, p_method: 'Online',
+  });
+  equal('a part payment is taken as typed', Number(part.amount), 2000);
+  equal('and leaves the rest owing', (await dues(A)).amount_due, 4000);
+
+  const undone = await db.rpc('reverse_payment', { p_teacher: TID, p_payment: part.payment_id });
+  equal('Undo gives back the exact amount', Number(undone.amount), 2000);
+  equal('and restores the balance', (await dues(A)).amount_due, 6000);
+  const kept = await db.selectOne('payments', { id: `eq.${part.payment_id}`, select: 'id,reversed_at' });
+  equal('the payment row is kept, marked reversed', Boolean(kept?.reversed_at), true);
+  await raises('and cannot be undone twice', /already/, () =>
+    db.rpc('reverse_payment', { p_teacher: TID, p_payment: part.payment_id }),
+  );
+  await clearMoney(A);
 
   await raises("it refuses another teacher's student", /student not found/, () =>
     db.rpc('record_payment', { p_teacher: A, p_student: A, p_classes: 1, p_amount: null, p_method: 'Cash' }),

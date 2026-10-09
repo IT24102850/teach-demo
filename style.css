@@ -1401,6 +1401,18 @@ body.busy .phone {
 
 /* ------------------------------------------------- point 9 · calendar ----- */
 
+/* The layer the floating controls live in: the whole frame, click-through
+   except where a control actually is. */
+#over {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+#over > * {
+  pointer-events: auto;
+}
+
 /* The "+" that sits over the calendar, clear of the tab bar. */
 .fab {
   position: absolute;

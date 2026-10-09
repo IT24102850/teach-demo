@@ -49,12 +49,19 @@ const STUDENTS = [
   ['Sahan Peiris', 5, 'English', 'Kotte', 'Kotte Primary', 'Local', 800, 'Dulani Peiris', '94770000016'],
 ];
 
+/*
+ * Point 12: a class now stores whether it is individual or a group, and where
+ * it is held. The last two entries of each row are the venue:
+ *   ['institute', 'Bright Minds Institute']  a named place
+ *   ['own_place', null]                      the teacher's own place
+ *   ['area', null]                           at the student's area
+ */
 const CLASSES = [
-  // subject, curriculum, grade, days (0=Mon), time, hours, place, student names
-  ['Maths', 'Local', 11, [0, 2], '16:00', 1.5, 'Hall B, Nugegoda', ['Kasun Perera', 'Amaya Jayasinghe']],
-  ['Maths', 'Local', 9, [1, 3], '15:00', 1, 'Maharagama', ['Dilini Silva']],
-  ['Science', 'Cambridge', 10, [2, 4], '17:30', 1, 'Dehiwala', ['Ravi Fernando']],
-  ['English', 'Edexcel', 9, [0, 5], '10:00', 1, 'Kotte', ['Tharindu Bandara']],
+  // subject, curriculum, grade, days (0=Mon), time, hours, area, student names, venue
+  ['Maths', 'Local', 11, [0, 2], '16:00', 1.5, 'Nugegoda', ['Kasun Perera', 'Amaya Jayasinghe'], ['institute', 'Bright Minds Institute']],
+  ['Maths', 'Local', 9, [1, 3], '15:00', 1, 'Maharagama', ['Dilini Silva'], ['area', null]],
+  ['Science', 'Cambridge', 10, [2, 4], '17:30', 1, 'Dehiwala', ['Ravi Fernando'], ['area', null]],
+  ['English', 'Edexcel', 9, [0, 5], '10:00', 1, 'Kotte', ['Tharindu Bandara'], ['area', null]],
   [
     'Maths',
     'Local',
@@ -62,7 +69,7 @@ const CLASSES = [
     [5],
     '08:00',
     2,
-    'Hall A, Nugegoda',
+    'Nugegoda',
     [
       'Nethmi Wickrama',
       'Sachini Gunawardena',
@@ -188,6 +195,8 @@ async function main() {
     theme: 'night',
     auto_reminders: true,
     remind_after_days: 14,
+    own_place_name: 'My home',
+    own_place_area: 'Nugegoda',
     code_lookup: codeLookup(TEACHER_CODE),
     code_hash: teacherCode.hash,
     code_salt: teacherCode.salt,
@@ -208,6 +217,7 @@ async function main() {
       school,
       curriculum,
       fee_per_class: fee,
+      call_name: name.split(' ')[0],
       parent_name: parent,
       parent_phone: phone,
       status: 'active',
@@ -220,6 +230,8 @@ async function main() {
   const [pending] = await db.insert('students', {
     teacher_id: tid,
     name: 'Ishara Madushani',
+    call_name: 'Ishara',
+    ambition: 'Doctor',
     grade: 11,
     school: 'Devi Balika Vidyalaya',
     area: 'Nugegoda',
@@ -228,6 +240,7 @@ async function main() {
     wanted_subjects: ['Maths', 'Science'],
     fee_per_class: 0,
     parent_name: 'Lalith Madushani',
+    parent_occupation: 'Engineer',
     parent_phone: '94770000017',
     status: 'pending',
   });
@@ -236,18 +249,33 @@ async function main() {
   const startDate = addDays(TODAY, -WEEKS_OF_HISTORY * 7);
   const classRows = await db.insert(
     'classes',
-    CLASSES.map(([subject, curriculum, grade, days, time, hours, place]) => ({
-      teacher_id: tid,
-      subject,
-      curriculum,
-      grade,
-      title: `Grade ${grade} ${subject}`,
-      place,
-      days,
-      start_time: time,
-      duration_hours: hours,
-      start_date: startDate,
-    })),
+    CLASSES.map(([subject, curriculum, grade, days, time, hours, area, names, venue]) => {
+      const [venueType, venueName] = venue || ['area', null];
+      const kind = names.length === 1 ? 'individual' : 'group';
+      // The readable line, built the same way the app builds it.
+      const place =
+        venueType === 'institute'
+          ? `${venueName} · ${area}`
+          : venueType === 'own_place'
+            ? `My home · ${area}`
+            : area;
+      return {
+        teacher_id: tid,
+        subject,
+        curriculum,
+        grade,
+        title: `Grade ${grade} ${subject}`,
+        kind,
+        venue_type: venueType,
+        venue_name: venueType === 'institute' ? venueName : null,
+        area,
+        place,
+        days,
+        start_time: time,
+        duration_hours: hours,
+        start_date: startDate,
+      };
+    }),
   );
 
   // Give each class the title its size implies (rule 6.2).

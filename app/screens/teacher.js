@@ -60,8 +60,6 @@ function statusPill(session) {
   return pill(t(STATUS_KEY[status.label] || 'done'), status.tone);
 }
 
-const typeKey = (n) => R.classType(n).toLowerCase().replace(' ', '_');
-
 /** Point 12: the stored kind, and the venue written the way it was entered. */
 const kindLabel = (cls) => t(R.classKind(cls) === 'individual' ? 'individual' : 'group');
 const placeOf = (cls) =>
@@ -394,8 +392,19 @@ export function calendar() {
     </div>
     ${body}
     ${button(t('all_classes'), { act: 'nav.allclasses', cls: 'o wide mt' })}
-    <button type="button" class="fab" data-a="class.add" aria-label="${esc(t('add_class'))}">+</button>
   `;
+}
+
+/**
+ * Point 9: the "+" for a new class.
+ *
+ * It is drawn into the overlay layer rather than into the screen, so it stays
+ * in the bottom-right corner instead of scrolling away with the calendar.
+ */
+export function overlay() {
+  if (S.tab !== 'classes' || S.sub) return '';
+  return `<button type="button" class="fab" data-a="class.add"
+    aria-label="${esc(t('add_class'))}">+</button>`;
 }
 
 /* ---------------------------------------------- all classes & one class -- */
@@ -463,13 +472,13 @@ export function classDetail() {
   return `
     <div class="row top-row">${backButton()}<h1 class="cal-h">${esc(cls.title)}</h1></div>
     ${card(
-      `${muted(`${cls.curriculum} · ${t(typeKey(enrolled.length))}`)}
+      `${muted(`${cls.curriculum} · ${kindLabel(cls)}`)}
        <b class="blk-b">${esc(
          cls.once_date
            ? `${cls.once_date} · ${R.timeRange(cls)}`
            : `${(cls.days || []).map((d) => R.DAY_SHORT[d]).join(', ')} · ${R.timeRange(cls)}`,
        )}</b>
-       ${muted(cls.place || '')}`,
+       ${muted(placeOf(cls))}`,
     )}
     ${label(t('students'))}
     ${enrolled
@@ -496,7 +505,10 @@ export function classDetail() {
             .join('')}`)
         : ''
     }
-    ${button(t('skip_this_day'), { act: 'class.skip', arg: cls.id, cls: 'o wide mt' })}
+    <div class="row gap mt">
+      ${button(t('edit'), { act: 'class.edit', arg: `${cls.id}|${S.cal.date}`, cls: 'o' })}
+      ${button(t('skip_this_day'), { act: 'class.skip', arg: cls.id, cls: 'o' })}
+    </div>
     ${button(S.sub.sure ? t('remove_class_again') : t('remove_class'), {
       act: 'class.remove',
       arg: cls.id,
@@ -529,7 +541,10 @@ export function attendance() {
     done: false,
     absent: [],
   };
-  const state = S.sub.result ? 'ended' : R.sessionState(session);
+  // The clock may have been started a moment ago and not reloaded yet, or set
+  // by "Use scheduled time", so S.sub.startedAt counts as a start too.
+  const started = session.started_at || S.sub.startedAt || null;
+  const state = S.sub.result ? 'ended' : R.sessionState({ ...session, started_at: started });
   const enrolled = (cls.student_ids || []).map(studentById).filter(Boolean);
 
   const head = `

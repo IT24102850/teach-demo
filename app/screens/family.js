@@ -66,7 +66,7 @@ function nextClassCard() {
   return card(
     `${label(t('next_class_label'))}
      ${big(`${when} ${R.hhmm(next.cls.start_time)}`, 'margin:6px 0')}
-     <div>${esc(`${next.cls.subject} · ${next.cls.place || ''} · ${next.cls.duration_hours}h`)}</div>`,
+     <div>${esc(`${next.cls.subject} · ${next.cls.place || ''} · ${R.durationLabel(next.cls.duration_hours)}`)}</div>`,
     { cls: 'hero' },
   );
 }
@@ -323,7 +323,7 @@ export function studentHome() {
            : t('nothing_planned'),
          'margin:6px 0',
        )}
-       ${next ? `<div>${esc(`${next.cls.subject} · ${next.cls.place || ''} · ${next.cls.duration_hours}h`)}</div>` : ''}`,
+       ${next ? `<div>${esc(`${next.cls.subject} · ${next.cls.place || ''} · ${R.durationLabel(next.cls.duration_hours)}`)}</div>` : ''}`,
       { cls: 'hero' },
     )}
     ${tiles([

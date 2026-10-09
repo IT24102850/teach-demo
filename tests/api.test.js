@@ -52,6 +52,8 @@ function fixtures() {
         code_lookup: codeLookup('1234'),
         code_hash: teacherCode.hash,
         code_salt: teacherCode.salt,
+        own_place_name: 'My home',
+        own_place_area: 'Nugegoda',
       },
     ],
     v_students: [
@@ -100,6 +102,10 @@ function fixtures() {
         grade: 11,
         title: 'Grade 11 Maths small group',
         place: 'Nugegoda',
+        kind: 'group',
+        venue_type: 'area',
+        venue_name: null,
+        area: 'Nugegoda',
         days: [0, 2],
         start_time: '16:00:00',
         duration_hours: 1.5,
@@ -218,17 +224,88 @@ globalThis.fetch = async (url, init = {}) => {
   if (parsed.pathname.startsWith('/rest/v1/rpc/')) {
     const fn = parsed.pathname.split('/').pop();
     if (fn === 'finish_class') {
-      const id = uuid();
-      DB.sessions.push({ id, class_id: body.p_class, teacher_id: body.p_teacher, session_date: body.p_date, status: 'done' });
-      return json(200, id);
+      // Point 10: the real start and end times go in with the session.
+      const existing = DB.sessions.find(
+        (x) => x.class_id === body.p_class && x.session_date === body.p_date,
+      );
+      const row = existing || {
+        id: uuid(),
+        class_id: body.p_class,
+        teacher_id: body.p_teacher,
+        session_date: body.p_date,
+      };
+      row.status = 'done';
+      row.started_at = row.started_at || body.p_started || null;
+      row.ended_at = body.p_ended || new Date().toISOString();
+      row.absent = body.p_absent || [];
+      if (!existing) DB.sessions.push(row);
+      return json(200, row.id);
+    }
+    if (fn === 'start_class') {
+      const existing = DB.sessions.find(
+        (x) => x.class_id === body.p_class && x.session_date === body.p_date,
+      );
+      // Pressing Start twice must not restart the clock.
+      if (existing) {
+        existing.started_at = existing.started_at || new Date().toISOString();
+        return json(200, existing.started_at);
+      }
+      const started = new Date().toISOString();
+      DB.sessions.push({
+        id: uuid(),
+        class_id: body.p_class,
+        teacher_id: body.p_teacher,
+        session_date: body.p_date,
+        status: 'planned',
+        started_at: started,
+        ended_at: null,
+      });
+      return json(200, started);
     }
     if (fn === 'record_payment') {
-      const due = DB.v_students.find((s) => s.id === body.p_student)?.amount_due ?? 0;
-      const fee = DB.v_students.find((s) => s.id === body.p_student)?.fee_per_class ?? 0;
-      const amount = body.p_amount ?? (body.p_classes ? body.p_classes * fee : due);
+      const student = DB.v_students.find((s) => s.id === body.p_student);
+      const due = student?.amount_due ?? 0;
+      const fee = student?.fee_per_class ?? 0;
+      const asked = body.p_amount ?? (body.p_classes ? body.p_classes * fee : due);
+      // Point 11: the database clamps to what is owed, so a part payment is
+      // kept as typed and an over-payment can never create a credit.
+      const amount = Math.min(Math.max(asked, 0), due);
       if (amount <= 0) return json(400, { message: 'nothing is owed' });
-      DB.payments.push({ student_id: body.p_student, amount, method: body.p_method });
-      return json(200, Math.min(amount, due));
+      const receiptNo =
+        DB.payments.reduce((max, x) => Math.max(max, x.receipt_no || 0), 0) + 1;
+      const row = {
+        id: uuid(),
+        teacher_id: body.p_teacher,
+        student_id: body.p_student,
+        amount,
+        method: body.p_method,
+        paid_date: body.p_paid_date || '2026-03-18',
+        receipt_no: receiptNo,
+        reversed_at: null,
+      };
+      DB.payments.push(row);
+      if (student) student.amount_due = due - amount;
+      return json(200, {
+        payment_id: row.id,
+        amount,
+        receipt_no: receiptNo,
+        balance: due - amount,
+        full: amount >= due,
+      });
+    }
+    if (fn === 'reverse_payment') {
+      const row = DB.payments.find((x) => x.id === body.p_payment);
+      if (!row) return json(400, { message: 'payment not found for this teacher' });
+      if (row.reversed_at) return json(400, { message: 'that payment was already undone' });
+      row.reversed_at = new Date().toISOString();
+      const student = DB.v_students.find((s) => s.id === row.student_id);
+      if (student) student.amount_due = Number(student.amount_due) + Number(row.amount);
+      return json(200, {
+        payment_id: row.id,
+        amount: row.amount,
+        student_id: row.student_id,
+        receipt_no: row.receipt_no,
+      });
     }
     return json(400, { message: `unknown function ${fn}` });
   }
@@ -245,6 +322,12 @@ globalThis.fetch = async (url, init = {}) => {
       rows = rows.map((row) => ({
         ...row,
         classes: DB.classes.find((c) => c.id === row.class_id) || null,
+      }));
+    }
+    if (table === 'sessions' && (params.select || '').includes('attendance(')) {
+      rows = rows.map((row) => ({
+        ...row,
+        attendance: DB.attendance.filter((a) => a.session_id === row.id),
       }));
     }
     if (table === 'family_accounts' && (params.select || '').includes('family_children(')) {
@@ -550,7 +633,213 @@ test('a teacher cannot touch another teacher’s class', async () => {
   assert.equal(res.statusCode, 404);
 });
 
-test('recording a payment writes a paid event with the amount', async () => {
+/* ===================================== point 10: start, end and absence == */
+
+test('Start class records the real start time and nothing else', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.start',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.ok(res.json.started_at, 'the clock is running');
+  const session = DB.sessions.find((x) => x.class_id === CLASS);
+  assert.equal(session.status, 'planned', 'starting is not finishing');
+  assert.equal(session.ended_at, null);
+  assert.equal(DB.charges.length, 0, 'nobody is charged until the class ends');
+});
+
+test('pressing Start twice does not restart the clock', async () => {
+  const cookie = await signInTeacher();
+  const first = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=attendance.start', cookie, body: { class_id: CLASS, date: '2026-03-18' } });
+  const again = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=attendance.start', cookie, body: { class_id: CLASS, date: '2026-03-18' } });
+  assert.equal(again.json.started_at, first.json.started_at);
+  assert.equal(DB.sessions.length, 1, 'still one session');
+});
+
+test('End class saves the real times and tells each absent parent once', async () => {
+  const cookie = await signInTeacher();
+  await call(teacherApi, { method: 'POST', url: '/api/teacher?r=attendance.start', cookie, body: { class_id: CLASS, date: '2026-03-18' } });
+
+  const started = '2026-03-18T10:32:00.000Z';
+  const ended = '2026-03-18T13:01:00.000Z';
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.finish',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', absent: [KASUN], started_at: started, ended_at: ended },
+  });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.absent, 1);
+  assert.equal(res.json.present, 1);
+  assert.equal(res.json.ended_at, ended, 'the end time is stored');
+  assert.equal(res.json.messages.length, 1, 'one message, to the one absent parent');
+  assert.match(res.json.messages[0].text, /was absent from today/);
+  assert.equal(res.json.messages[0].name, 'Kasun Perera');
+  assert.equal(DB.events.filter((e) => e.type === 'absent').length, 1);
+});
+
+test('a parent already told with "Send now" is not told again at the end', async () => {
+  const cookie = await signInTeacher();
+
+  const now = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.absent_now',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', student_id: KASUN },
+  });
+  assert.equal(now.statusCode, 200, now.bodyText);
+  assert.equal(DB.events.filter((e) => e.type === 'absent').length, 1);
+
+  await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.finish',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', absent: [KASUN], already_notified: [KASUN] },
+  });
+  assert.equal(
+    DB.events.filter((e) => e.type === 'absent').length,
+    1,
+    'point 10: exactly one message per absent student',
+  );
+});
+
+test('"Send now" refuses a student who is not in that class', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.absent_now',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', student_id: OTHER_CHILD },
+  });
+  assert.equal(res.statusCode, 404);
+});
+
+test('Resend can send a message the teacher edited', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.resend',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', student_id: KASUN, text: 'Please call me about today.' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.text, 'Please call me about today.');
+  assert.equal(DB.events.at(-1).text, 'Marked absent for Maths', 'the feed keeps its short label');
+});
+
+test('the start and end times can be corrected after the class', async () => {
+  const cookie = await signInTeacher();
+  await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.finish',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', absent: [], started_at: '2026-03-18T10:32:00.000Z', ended_at: '2026-03-18T13:01:00.000Z' },
+  });
+
+  const fixed = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.fix_times',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', started_at: '2026-03-18T10:30:00.000Z', ended_at: '2026-03-18T12:30:00.000Z' },
+  });
+  assert.equal(fixed.statusCode, 200, fixed.bodyText);
+  assert.equal(fixed.json.taught_minutes, 120);
+
+  const backwards = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.fix_times',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-18', started_at: '2026-03-18T13:00:00.000Z', ended_at: '2026-03-18T10:00:00.000Z' },
+  });
+  assert.equal(backwards.statusCode, 400);
+  assert.match(backwards.json.error, /cannot end before/);
+});
+
+test('correcting the times of a class that was never marked is refused', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=attendance.fix_times',
+    cookie,
+    body: { class_id: CLASS, date: '2026-03-20', started_at: '2026-03-20T10:30:00.000Z', ended_at: '2026-03-20T12:30:00.000Z' },
+  });
+  assert.equal(res.statusCode, 404);
+});
+
+/* ======================================= point 3: numbers on every path == */
+
+test('adding a student by hand is held to the +94 rule', async () => {
+  const cookie = await signInTeacher();
+  const bad = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=student.create',
+    cookie,
+    body: { name: 'New Pupil', parent_phone: '0112345678', fee_per_class: 1000 },
+  });
+  assert.equal(bad.statusCode, 400);
+  assert.match(bad.json.error, /Sri Lankan mobile/);
+
+  const good = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=student.create',
+    cookie,
+    body: { name: 'New Pupil', parent_phone: '077 123 4567', fee_per_class: 1000 },
+  });
+  assert.equal(good.statusCode, 200, good.bodyText);
+  const made = DB.students.find((x) => x.name === 'New Pupil');
+  assert.equal(made.parent_phone, '94771234567');
+  assert.equal(made.call_name, 'New', 'the short name is suggested');
+});
+
+test('editing a number is held to the same rule', async () => {
+  const cookie = await signInTeacher();
+  const bad = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=student.update',
+    cookie,
+    body: { student_id: KASUN, parent_phone: '12345' },
+  });
+  assert.equal(bad.statusCode, 400);
+
+  const good = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=student.update',
+    cookie,
+    body: { student_id: KASUN, parent_phone: '0771112222' },
+  });
+  assert.equal(good.statusCode, 200, good.bodyText);
+  assert.equal(DB.students.find((x) => x.id === KASUN).parent_phone, '94771112222');
+});
+
+/* ============================== point 12: the teacher's own place setting = */
+
+test('the teaching place is saved once and reused', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=settings.update',
+    cookie,
+    body: { own_place_name: 'My studio', own_place_area: 'Dehiwala' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.teacher.own_place_name, 'My studio');
+
+  const made = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    body: { kind: 'group', venue_type: 'own_place', subject: 'Maths', days: [4], start_time: '18:00', duration_hours: 1, student_ids: [KASUN, AMAYA] },
+  });
+  assert.equal(made.statusCode, 200, made.bodyText);
+  const cls = DB.classes.find((c) => c.id === made.json.class_id);
+  assert.equal(cls.place, 'My studio · Dehiwala');
+});
+
+test('recording a payment writes a paid event with the amount and a receipt', async () => {
   const cookie = await signInTeacher();
   const res = await call(teacherApi, {
     method: 'POST',
@@ -560,10 +849,103 @@ test('recording a payment writes a paid event with the amount', async () => {
   });
   assert.equal(res.statusCode, 200, res.bodyText);
   assert.equal(res.json.amount, 3000, '2 classes at 1,500');
+  assert.equal(res.json.receipt, '#0001', 'point 11: the parent gets a receipt number');
+  assert.equal(res.json.balance, 3000, 'half of the 6,000 is still owed');
+  assert.equal(res.json.full, false);
   const paid = DB.events.find((e) => e.type === 'paid');
   assert.ok(paid);
   assert.match(paid.text, /LKR 3,000/);
   assert.equal(DB.payments[0].method, 'Cash');
+});
+
+/* ------------------------------------------- point 11: part payment, undo */
+
+test('a part payment leaves the rest owing', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.record',
+    cookie,
+    body: { student_id: KASUN, amount: 2000, method: 'Online' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.amount, 2000);
+  assert.equal(res.json.balance, 4000, '2,000 off 6,000 leaves 4,000');
+  assert.equal(res.json.full, false);
+  assert.equal(DB.payments[0].method, 'Online', 'Online is a method now');
+});
+
+test('a payment larger than the bill is clamped, never a credit', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.record',
+    cookie,
+    body: { student_id: KASUN, amount: 60000, method: 'Cash' },
+  });
+  assert.equal(res.json.amount, 6000);
+  assert.equal(res.json.balance, 0);
+  assert.equal(res.json.full, true);
+});
+
+test('an amount of zero or less is refused before it reaches the database', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.record',
+    cookie,
+    body: { student_id: KASUN, amount: 0 },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /amount/i);
+});
+
+test('turning the receipt tick off records the payment and sends nothing', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.record',
+    cookie,
+    body: { student_id: KASUN, amount: 1500, send_receipt: false },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(DB.events.filter((e) => e.type === 'paid').length, 0, 'no message went out');
+  assert.equal(DB.payments.length, 1, 'but the money is recorded');
+});
+
+test('Undo reverses a payment instead of deleting it', async () => {
+  const cookie = await signInTeacher();
+  const paid = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.record',
+    cookie,
+    body: { student_id: KASUN, amount: 2000 },
+  });
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.reverse',
+    cookie,
+    body: { payment_id: paid.json.payment_id },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.amount, 2000);
+  assert.equal(DB.payments.length, 1, 'the row is still there');
+  assert.ok(DB.payments[0].reversed_at, 'it is marked reversed, not removed');
+  assert.equal(res.json.balance, 6000, 'the balance is exactly what it was');
+});
+
+test('the same payment cannot be undone twice', async () => {
+  const cookie = await signInTeacher();
+  const paid = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.record',
+    cookie,
+    body: { student_id: KASUN, amount: 1000 },
+  });
+  await call(teacherApi, { method: 'POST', url: '/api/teacher?r=payment.reverse', cookie, body: { payment_id: paid.json.payment_id } });
+  const again = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=payment.reverse', cookie, body: { payment_id: paid.json.payment_id } });
+  assert.equal(again.statusCode, 500);
+  assert.match(again.json.error, /already/);
 });
 
 test('an unknown payment method falls back to bank transfer', async () => {
@@ -587,6 +969,8 @@ test('confirming a slip pays the whole balance', async () => {
   });
   assert.equal(res.statusCode, 200, res.bodyText);
   assert.equal(res.json.amount, 6000);
+  assert.equal(res.json.receipt, '#0001');
+  assert.equal(res.json.full, true);
 });
 
 test('confirming a slip for a student who owes nothing is refused', async () => {
@@ -682,10 +1066,133 @@ test('creating a class needs a student and a day, and names itself', async () =>
   assert.equal(noDays.statusCode, 400);
   assert.match(noDays.json.error, /at least one day/);
 
-  const made = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=class.create', cookie, body: { subject: 'Maths', days: [0, 2], start_time: '16:00', student_ids: [KASUN, AMAYA], grade: 11 } });
+  // 18:00 rather than 16:00: the fixture class already runs 16:00-17:30 on
+  // those days, and point 13 now refuses an overlap.
+  const made = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=class.create', cookie, body: { subject: 'Maths', days: [0, 2], start_time: '18:00', duration_hours: 1.5, student_ids: [KASUN, AMAYA], grade: 11 } });
   assert.equal(made.statusCode, 200, made.bodyText);
   assert.equal(made.json.title, 'Grade 11 Maths small group', 'two students makes a small group');
   assert.equal(DB.class_students.filter((l) => l.class_id === made.json.class_id).length, 2);
+});
+
+/* ------------------------------- point 12: individual or group, and where */
+
+test('an individual class cannot be saved with two students', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    body: { kind: 'individual', subject: 'Maths', days: [1], start_time: '18:00', duration_hours: 1, student_ids: [KASUN, AMAYA] },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /exactly one student/);
+});
+
+test('a group class cannot be saved with one student', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    body: { kind: 'group', venue_type: 'institute', venue_name: 'Bright Minds', area: 'Nugegoda', subject: 'Maths', days: [1], start_time: '18:00', duration_hours: 1, student_ids: [KASUN] },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /two or more students/);
+});
+
+test('a group class at an institute needs the institute name', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    body: { kind: 'group', venue_type: 'institute', area: 'Nugegoda', subject: 'Maths', days: [1], start_time: '18:00', duration_hours: 1, student_ids: [KASUN, AMAYA] },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /institute name/);
+});
+
+test('the kind and the venue are stored, not guessed', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    body: { kind: 'group', venue_type: 'institute', venue_name: 'Bright Minds Institute', area: 'Nugegoda', subject: 'Maths', days: [1], start_time: '18:00', duration_hours: 2, student_ids: [KASUN, AMAYA], grade: 11 },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  const made = DB.classes.find((c) => c.id === res.json.class_id);
+  assert.equal(made.kind, 'group');
+  assert.equal(made.venue_type, 'institute');
+  assert.equal(made.venue_name, 'Bright Minds Institute');
+  assert.equal(made.area, 'Nugegoda');
+  assert.equal(made.place, 'Bright Minds Institute · Nugegoda', 'the readable venue line');
+});
+
+test('"my own place" takes the area from Settings without typing it', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    body: { kind: 'group', venue_type: 'own_place', subject: 'Maths', days: [1], start_time: '18:00', duration_hours: 1, student_ids: [KASUN, AMAYA] },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  const made = DB.classes.find((c) => c.id === res.json.class_id);
+  assert.equal(made.venue_type, 'own_place');
+  assert.equal(made.area, 'Nugegoda', 'from own_place_area');
+  assert.equal(made.place, 'My home · Nugegoda');
+});
+
+/* --------------------------------------------- point 13: the clash check */
+
+test('a class that overlaps another is refused, and names the one in the way', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    // the fixture class is Mon and Wed, 16:00 for 1.5 hours
+    body: { kind: 'group', venue_type: 'own_place', subject: 'Science', days: [0], start_time: '16:30', duration_hours: 1, student_ids: [KASUN, AMAYA] },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.match(res.json.error, /Grade 11 Maths small group/);
+  assert.equal(res.json.clash.start_time, '16:00');
+});
+
+test('a class that only touches another is allowed', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    // 17:30 is exactly when the fixture class ends: touching is not overlapping
+    body: { kind: 'group', venue_type: 'own_place', subject: 'Science', days: [0], start_time: '17:30', duration_hours: 1, student_ids: [KASUN, AMAYA] },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+});
+
+test('"Save anyway" lets a deliberate overlap through', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.create',
+    cookie,
+    body: { kind: 'group', venue_type: 'own_place', subject: 'Science', days: [0], start_time: '16:30', duration_hours: 1, student_ids: [KASUN, AMAYA], allow_clash: true },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+});
+
+test('editing a class does not clash with itself', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.update',
+    cookie,
+    body: { class_id: CLASS, start_time: '16:00', duration_hours: 2 },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(Number(DB.classes[0].duration_hours), 2);
 });
 
 test('a class cannot be built from someone else’s students', async () => {
@@ -906,13 +1413,67 @@ test('a wrong sign-up key tells the family the link is stale', async () => {
   assert.equal(res.statusCode, 404);
 });
 
-test('a sign-up needs a name and a phone number', async () => {
+/** Everything the four steps of point 8 ask for, as one valid submission. */
+const goodSignup = (over = {}) => ({
+  t: 'nimal',
+  name: 'New Child',
+  call_name: 'New',
+  grade: 10,
+  school: 'A School',
+  curriculum: 'Cambridge',
+  subjects: ['Maths'],
+  ambition: 'Doctor',
+  parent_name: 'A Parent',
+  parent_occupation: 'Engineer',
+  parent_phone: '0770000018',
+  ...over,
+});
+
+test('a sign-up needs every answer the four steps ask for', async () => {
   reset();
-  const noName = await call(joinApi, { method: 'POST', url: '/api/join?r=submit', body: { t: 'nimal', parent_phone: '94770000018' } });
-  assert.equal(noName.statusCode, 400);
-  const noPhone = await call(joinApi, { method: 'POST', url: '/api/join?r=submit', body: { t: 'nimal', name: 'New Child' } });
-  assert.equal(noPhone.statusCode, 400);
-  assert.match(noPhone.json.error, /WhatsApp number/);
+  const cases = [
+    [{ name: '' }, /student name/i],
+    [{ parent_phone: '' }, /Sri Lankan mobile/i],
+    [{ parent_phone: '12345' }, /Sri Lankan mobile/i],
+    [{ grade: 0 }, /grade/i],
+    [{ grade: 14 }, /grade/i],
+    [{ parent_name: '' }, /parent/i],
+    [{ subjects: [] }, /subject/i],
+  ];
+  for (const [over, expected] of cases) {
+    const res = await call(joinApi, { method: 'POST', url: '/api/join?r=submit', body: goodSignup(over) });
+    assert.equal(res.statusCode, 400, `${JSON.stringify(over)} should be refused`);
+    assert.match(res.json.error, expected);
+  }
+});
+
+test('point 3: the join form stores 947XXXXXXXX whatever shape arrives', async () => {
+  for (const typed of ['0770000018', '+94 77 000 0018', '94770000018', '77 000 0018']) {
+    reset();
+    const res = await call(joinApi, {
+      method: 'POST',
+      url: '/api/join?r=submit',
+      body: goodSignup({ parent_phone: typed, name: `Child ${typed}` }),
+    });
+    assert.equal(res.statusCode, 200, `${typed}: ${res.bodyText}`);
+    const created = DB.students.find((x) => x.name === `Child ${typed}`);
+    assert.equal(created.parent_phone, '94770000018', `${typed} should normalise`);
+  }
+});
+
+test('point 8: the extra answers are kept, and the short name defaults', async () => {
+  reset();
+  const res = await call(joinApi, {
+    method: 'POST',
+    url: '/api/join?r=submit',
+    body: goodSignup({ call_name: '', ambition: 'Pilot', parent_occupation: 'Nurse' }),
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  const created = DB.students.find((x) => x.name === 'New Child');
+  assert.equal(created.call_name, 'New', 'the first name is suggested when none was given');
+  assert.equal(created.ambition, 'Pilot');
+  assert.equal(created.parent_occupation, 'Nurse');
+  assert.equal(created.grade, 10);
 });
 
 test('a sign-up creates a pending student with no fee and no code', async () => {
@@ -920,7 +1481,7 @@ test('a sign-up creates a pending student with no fee and no code', async () => 
   const res = await call(joinApi, {
     method: 'POST',
     url: '/api/join?r=submit',
-    body: { t: 'nimal', name: 'New Child', grade: '10', school: 'A School', subjects: ['Maths', 'Ballet'], curriculum: 'Cambridge', parent_name: 'A Parent', parent_phone: '+94 77 000 0018' },
+    body: goodSignup({ subjects: ['Maths', 'Ballet'], parent_phone: '+94 77 000 0018' }),
   });
   assert.equal(res.statusCode, 200, res.bodyText);
   assert.equal(res.json.teacher, 'Nimal Sir');
@@ -936,16 +1497,39 @@ test('a sign-up creates a pending student with no fee and no code', async () => 
 
 test('a sign-up cannot choose a curriculum the teacher does not offer', async () => {
   reset();
-  await call(joinApi, { method: 'POST', url: '/api/join?r=submit', body: { t: 'nimal', name: 'Another Child', parent_phone: '94770000019', curriculum: 'Edexcel' } });
+  await call(joinApi, {
+    method: 'POST',
+    url: '/api/join?r=submit',
+    body: goodSignup({ name: 'Another Child', curriculum: 'Edexcel' }),
+  });
   assert.equal(DB.students.find((s) => s.name === 'Another Child').curriculum, 'Local');
+});
+
+test('a subject the teacher does not teach is dropped, and an empty list refused', async () => {
+  reset();
+  const res = await call(joinApi, {
+    method: 'POST',
+    url: '/api/join?r=submit',
+    body: goodSignup({ name: 'Third Child', subjects: ['Ballet'] }),
+  });
+  assert.equal(res.statusCode, 400, 'nothing valid was left to study');
 });
 
 test('sign-ups from one address are capped', async () => {
   reset();
   for (let i = 0; i < 5; i += 1) {
-    await call(joinApi, { method: 'POST', url: '/api/join?r=submit', body: { t: 'nimal', name: `Child ${i}`, parent_phone: `9477000010${i}` } });
+    const res = await call(joinApi, {
+      method: 'POST',
+      url: '/api/join?r=submit',
+      body: goodSignup({ name: `Child ${i}`, parent_phone: `9477000010${i}` }),
+    });
+    assert.equal(res.statusCode, 200, res.bodyText);
   }
-  const res = await call(joinApi, { method: 'POST', url: '/api/join?r=submit', body: { t: 'nimal', name: 'One Too Many', parent_phone: '94770001099' } });
+  const res = await call(joinApi, {
+    method: 'POST',
+    url: '/api/join?r=submit',
+    body: goodSignup({ name: 'One Too Many', parent_phone: '94770001099' }),
+  });
   assert.equal(res.statusCode, 429);
 });
 

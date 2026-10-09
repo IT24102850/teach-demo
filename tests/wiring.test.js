@@ -24,6 +24,7 @@ const SCREEN_FILES = [
   'app/screens/teacher-forms.js',
   'app/screens/family.js',
   'app/join.js',
+  'app/fonts.js',
 ];
 
 const sources = Object.fromEntries(SCREEN_FILES.map((f) => [f, read(f)]));
@@ -46,8 +47,11 @@ function definedActions() {
     for (const match of src.matchAll(/^\s{2}'([\w.]+)':/gm)) names.add(match[1]);
     for (const match of src.matchAll(/^\s{2}([a-z][\w]*):\s*(\(|async)/gm)) names.add(match[1]);
   }
-  // join.js routes its three actions with an if/else chain instead of a table.
-  for (const name of ['curriculum', 'subject', 'submit']) names.add(name);
+  // join.js routes the wizard with an if/else chain instead of a table, so
+  // its actions are listed here. Keep this in step with the chain in join.js.
+  for (const name of ['curriculum', 'subject', 'submit', 'step.next', 'step.back', 'photo.pick', 'close']) {
+    names.add(name);
+  }
   return names;
 }
 
@@ -120,7 +124,11 @@ test('the service worker caches every module the page loads', () => {
   const sw = read('sw.js');
   const modules = new Set(['/app/main.js']);
   for (const file of SCREEN_FILES) {
-    for (const match of read(file).matchAll(/from '(\.[^']+)'/g)) {
+    const src = read(file);
+    // Static `from './x.js'` and dynamic `import('./x.js')` both have to be
+    // in the offline shell, or the app breaks the moment it is installed.
+    const imports = [...src.matchAll(/from '(\.[^']+)'/g), ...src.matchAll(/import\('(\.[^']+)'\)/g)];
+    for (const match of imports) {
       const resolved = join('/', dirname(file), match[1]).replace(/\\/g, '/');
       modules.add(resolved);
     }

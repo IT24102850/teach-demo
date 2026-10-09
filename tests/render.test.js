@@ -121,7 +121,11 @@ const CLASSES = [
     curriculum: 'Local',
     grade: 11,
     title: 'Grade 11 Maths small group',
-    place: 'Hall B, Nugegoda',
+    place: 'Bright Minds Institute · Nugegoda',
+    kind: 'group',
+    venue_type: 'institute',
+    venue_name: 'Bright Minds Institute',
+    area: 'Nugegoda',
     days: [0, 2],
     start_time: '16:00:00',
     duration_hours: 1.5,
@@ -138,6 +142,10 @@ const CLASSES = [
     grade: 10,
     title: 'Grade 10 Science',
     place: 'Dehiwala',
+    kind: 'individual',
+    venue_type: 'area',
+    venue_name: null,
+    area: 'Dehiwala',
     days: [2, 4],
     start_time: '17:00:00',
     duration_hours: 1,
@@ -154,6 +162,10 @@ const CLASSES = [
     grade: 9,
     title: 'Grade 9 English',
     place: 'Kotte',
+    kind: 'individual',
+    venue_type: 'area',
+    venue_name: null,
+    area: 'Kotte',
     days: [],
     start_time: '10:00:00',
     duration_hours: 1,
@@ -179,12 +191,25 @@ const TEACHER_DATA = {
     auto_reminders: true,
     remind_after_days: 14,
     join_key: 'nimal',
+    own_place_name: 'My home',
+    own_place_area: 'Nugegoda',
   },
   students: STUDENTS,
   classes: CLASSES,
   sessions: [
     { id: 'z1', class_id: 'c1', date: MONDAY, status: 'done', notified_at: null, absent: ['s1'], present: ['s2'] },
-    { id: 'z2', class_id: 'c2', date: TODAY, status: 'done', notified_at: null, absent: [], present: ['s3'] },
+    {
+      id: 'z2',
+      class_id: 'c2',
+      date: TODAY,
+      status: 'done',
+      notified_at: null,
+      // Point 10: the real clock times, 4:02 PM to 6:31 PM local.
+      started_at: '2026-03-18T10:32:00.000Z',
+      ended_at: '2026-03-18T13:01:00.000Z',
+      absent: [],
+      present: ['s3'],
+    },
     { id: 'z3', class_id: 'c2', date: FRIDAY, status: 'planned', notified_at: '2026-03-18T06:00:00Z', absent: [], present: [] },
   ],
   events: [
@@ -377,16 +402,93 @@ test('Class detail lists the students, the cancelled day and the remove button',
   assert.match(html, /LKR 6,000/, 'a student who owes shows the amount');
 });
 
-test('Attendance starts with everyone present and counts as you tap', () => {
+test('point 10: a class that has not begun offers only Start class', () => {
   asTeacher({ sub: { view: 'attendance', key: `c1|${TODAY}`, absent: [] } });
-  const clean = check('attendance', teacher.attendance());
-  assert.match(clean, /2 present · 0 absent/);
-  assert.equal((clean.match(/>Present</g) || []).length, 2);
+  const html = check('attendance scheduled', teacher.attendance());
+  assert.match(html, /Start class/);
+  assert.match(html, /00:00:00/, 'the clock is at zero');
+  assert.doesNotMatch(html, /End class/, 'nothing to end yet');
+  assert.doesNotMatch(html, />Present</, 'the roll comes with the class starting');
+  assert.match(html, /Use scheduled time/, 'for a teacher who forgot to press Start');
+});
 
-  asTeacher({ sub: { view: 'attendance', key: `c1|${TODAY}`, absent: ['s1'] } });
+test('point 10: a running class shows the timer, the roll and End class', () => {
+  asTeacher({
+    sub: {
+      view: 'attendance',
+      key: `c1|${TODAY}`,
+      absent: [],
+      told: [],
+      startedAt: '2026-03-18T10:32:00.000Z',
+    },
+  });
+  const clean = check('attendance running', teacher.attendance());
+  assert.match(clean, /In progress/);
+  assert.match(clean, /data-since="2026-03-18T10:32:00.000Z"/, 'the timer ticks from the real start');
+  assert.equal((clean.match(/>Present</g) || []).length, 2, 'everyone starts present');
+  assert.match(clean, /End class/);
+  assert.doesNotMatch(clean, /Send now/, 'nobody is absent yet');
+
+  asTeacher({
+    sub: {
+      view: 'attendance',
+      key: `c1|${TODAY}`,
+      absent: ['s1'],
+      told: [],
+      startedAt: '2026-03-18T10:32:00.000Z',
+    },
+  });
   const marked = teacher.attendance();
-  assert.match(marked, /1 present · 1 absent/);
   assert.match(marked, />Absent</);
+  assert.match(marked, /1 absent/);
+  assert.match(marked, /Send now/, 'the parent can be told during the class');
+  assert.match(marked, /message will be sent to .* parent when you end the class/);
+});
+
+test('point 10: a parent already told is not offered Send now again', () => {
+  asTeacher({
+    sub: {
+      view: 'attendance',
+      key: `c1|${TODAY}`,
+      absent: ['s1'],
+      told: ['s1'],
+      startedAt: '2026-03-18T10:32:00.000Z',
+    },
+  });
+  const html = teacher.attendance();
+  assert.doesNotMatch(html, /Send now/);
+});
+
+test('point 10: the ended screen shows the real times and the message sent', () => {
+  asTeacher({
+    sub: {
+      view: 'attendance',
+      key: `c1|${TODAY}`,
+      absent: ['s1'],
+      told: [],
+      result: {
+        absentIds: ['s1'],
+        started_at: '2026-03-18T10:32:00.000Z',
+        ended_at: '2026-03-18T13:01:00.000Z',
+        messages: [
+          {
+            student_id: 's1',
+            name: 'Kasun Perera',
+            text: 'Hi, this is Nimal Sir. Kasun Perera was absent from today’s class.',
+            status: 'sent',
+            at: '6:31 PM',
+          },
+        ],
+      },
+    },
+  });
+  const html = check('attendance ended', teacher.attendance());
+  assert.match(html, /Class ended/);
+  assert.match(html, /2 h 29 m/, 'the length actually taught');
+  assert.match(html, /was absent from today/, 'the exact text that went out');
+  assert.match(html, /Resend/);
+  assert.match(html, /Edit text/);
+  assert.match(html, /Start \/ end time wrong\?/);
 });
 
 test('Attendance can be opened for a class that was never marked', () => {
