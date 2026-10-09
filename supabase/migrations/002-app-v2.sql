@@ -99,6 +99,45 @@ from ch
 left join pay on pay.student_id = ch.student_id
 group by ch.student_id, ch.teacher_id;
 
+-- One row per student with everything the screens need.
+--
+-- `create or replace view` can only add columns to the end of a view: it
+-- cannot reorder or rename them. This view is built from `s.*`, so the moment
+-- a column is added to `students` anywhere but the end, the expansion shifts
+-- and a replace fails with
+--
+--     cannot change name of view column "amount_due" to "call_name"
+--
+-- Dropping it first is therefore not optional, and this is the only view here
+-- that needs it - every other one lists its columns explicitly. Nothing in the
+-- database depends on v_students (the app reads it over PostgREST), so the
+-- drop needs no CASCADE; if it ever complains about a dependency, that
+-- dependency is new and wants looking at rather than cascading away.
+drop view if exists v_students;
+create view v_students as
+select
+  s.*,
+  coalesce(d.amount_due, 0)                             as amount_due,
+  coalesce(d.pending_classes, 0)                        as pending_classes,
+  d.oldest_unpaid,
+  coalesce(d.paid_total, 0)                             as paid_total,
+  -- Counted in the teacher's own timezone, so "32 days late" means the same
+  -- thing here as it does on the phone. Change the zone with the app's
+  -- APP_TIMEZONE if you deploy somewhere else.
+  case when d.oldest_unpaid is null then 0
+       else greatest(0, ((now() at time zone 'Asia/Colombo')::date - d.oldest_unpaid))
+  end as days_late,
+  coalesce(h.hist, '')                                  as hist,
+  coalesce(t.total_classes, 0)                          as total_classes,
+  coalesce(t.present_classes, 0)                        as present_classes,
+  coalesce(m.mark_count, 0)                             as mark_count,
+  m.avg_pct, m.best_pct, m.first_pct, m.latest_pct
+from students s
+left join student_dues              d on d.student_id = s.id
+left join student_history           h on h.student_id = s.id
+left join student_attendance_totals t on t.student_id = s.id
+left join student_marks_summary     m on m.student_id = s.id;
+
 create or replace view teacher_months as
 select teacher_id,
        to_char(month, 'YYYY-MM') as month,

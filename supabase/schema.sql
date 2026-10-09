@@ -421,7 +421,21 @@ from marks
 group by student_id;
 
 -- One row per student with everything the screens need.
-create or replace view v_students as
+--
+-- `create or replace view` can only add columns to the end of a view: it
+-- cannot reorder or rename them. This view is built from `s.*`, so the moment
+-- a column is added to `students` anywhere but the end, the expansion shifts
+-- and a replace fails with
+--
+--     cannot change name of view column "amount_due" to "call_name"
+--
+-- Dropping it first is therefore not optional, and this is the only view here
+-- that needs it - every other one lists its columns explicitly. Nothing in the
+-- database depends on v_students (the app reads it over PostgREST), so the
+-- drop needs no CASCADE; if it ever complains about a dependency, that
+-- dependency is new and wants looking at rather than cascading away.
+drop view if exists v_students;
+create view v_students as
 select
   s.*,
   coalesce(d.amount_due, 0)                             as amount_due,

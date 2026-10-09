@@ -184,28 +184,80 @@ export async function connect({ host, port = 5432, user, password, database = 'p
       onMessage(type, body);
     }
   });
+  /* The phase waiting on the server, so a dropped socket can settle it. */
+  let active = null;
+  /* An ErrorResponse held back until its ReadyForQuery arrives. See below. */
+  let pendingError = null;
+
+  const settle = (err) => {
+    const waiting = active;
+    active = null;
+    waiting?.reject(err);
+  };
+
   socket.on('error', (err) => {
     fatal = err;
+    settle(err);
   });
   socket.on('close', () => {
     fatal = fatal || new Error('the connection closed');
+    // A login failure is reported and the connection is closed without any
+    // ReadyForQuery, so the held error has to come out here instead.
+    settle(pendingError || fatal);
   });
 
   /** Wait until `done` says we are finished with this phase. */
   const phase = (handle) =>
     new Promise((resolve, reject) => {
+      if (fatal) {
+        reject(fatal);
+        return;
+      }
+      active = { resolve, reject };
+      pendingError = null;
+
       onMessage = (type, body) => {
+        /*
+         * An ErrorResponse is always followed by a ReadyForQuery that closes
+         * the message cycle. Rejecting the moment the error arrives leaves
+         * that ReadyForQuery unread, and the *next* query then sees it before
+         * its own RowDescription - so it finishes early and hands back no
+         * rows at all, which surfaces much later as an undefined read.
+         *
+         * On a local connection the two messages almost always arrive in one
+         * TCP segment and are pumped in the same tick, which hides the bug.
+         * Over a long link they split, and it becomes a coin toss. So the
+         * error is held and raised when the cycle actually closes.
+         */
         if (type === 'E') {
-          reject(new PgError(readFields(body)));
+          pendingError = new PgError(readFields(body));
           return;
         }
+        if (type === 'Z' && pendingError) {
+          const err = pendingError;
+          pendingError = null;
+          settle(err);
+          return;
+        }
+
         try {
-          handle(type, body, resolve, reject);
+          handle(
+            type,
+            body,
+            (value) => {
+              active = null;
+              resolve(value);
+            },
+            (err) => {
+              active = null;
+              reject(err);
+            },
+          );
         } catch (err) {
+          active = null;
           reject(err);
         }
       };
-      if (fatal) reject(fatal);
     });
 
   /* ------------------------------------------------------------- login -- */

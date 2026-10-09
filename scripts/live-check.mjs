@@ -603,6 +603,20 @@ async function checkBackend() {
   equal('a class is created', made.status, 200);
   equal('and named by its size', made.json.title, 'Grade 11 Maths small group');
 
+  // Checked here, before the clash section parks other classes on this slot
+  // on purpose: a class is never compared with itself, so stretching one in
+  // place is allowed.
+  equal(
+    'editing a class does not clash with itself',
+    (await teacher.fetch('/api/teacher?r=class.update', { method: 'POST', body: { class_id: made.json.class_id, start_time: '09:00', duration_hours: 1.5 } })).status,
+    200,
+  );
+  // Put it back, so the clash checks below have the times they expect.
+  await teacher.fetch('/api/teacher?r=class.update', {
+    method: 'POST',
+    body: { class_id: made.json.class_id, start_time: '09:00', duration_hours: 1 },
+  });
+
   section('individual or group, and where (point 12)');
   equal(
     'an individual class cannot hold two students',
@@ -635,11 +649,6 @@ async function checkBackend() {
   equal(
     '"Save anyway" lets a deliberate overlap through',
     (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'group', venue_type: 'own_place', subject: 'Science', area: 'Kotte', student_ids: [STU_A, STU_B], days: [0], start_time: '09:30', duration_hours: 1, allow_clash: true } })).status,
-    200,
-  );
-  equal(
-    'editing a class does not clash with itself',
-    (await teacher.fetch('/api/teacher?r=class.update', { method: 'POST', body: { class_id: made.json.class_id, start_time: '09:00', duration_hours: 1.5 } })).status,
     200,
   );
   equal('without students it is refused', (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { subject: 'Maths', days: [0], start_time: '09:00', student_ids: [] } })).status, 400);
