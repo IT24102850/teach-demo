@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as db from '../api/_lib/db.js';
 import { codeLookup, hashCode } from '../api/_lib/session.js';
-import { addDays, today, weekday } from '../api/_lib/rules.js';
+import { addDays, hhmm, today, weekday } from '../api/_lib/rules.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = (process.argv[2] || process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
@@ -632,6 +632,68 @@ async function checkBackend() {
     'a group at an institute needs the name',
     (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'group', venue_type: 'institute', subject: 'Maths', area: 'Kotte', student_ids: [STU_A, STU_B], days: [1], start_time: '09:00', duration_hours: 1 } })).status,
     400,
+  );
+
+  section('dragging a class to a new slot (point 9, phase 2)');
+  // CLASS_LATER runs on one weekday only, three days from now.
+  const dragFrom = addDays(TODAY, 3);
+  const dragTo = addDays(TODAY, 4);
+
+  const movedOne = await teacher.fetch('/api/teacher?r=class.move', {
+    method: 'POST',
+    body: { class_id: CLASS_LATER, from_date: dragFrom, to_date: dragTo, start_time: '19:00', scope: 'day' },
+  });
+  equal('one session can be dragged to another day', movedOne.status, 200);
+  equal('as a one-off, leaving the class alone', movedOne.json.scope, 'day');
+  ok('the student was told', movedOne.json.told >= 1);
+  ok(
+    'and the message names both the old slot and the new one',
+    /has moved from .* to .*/.test(movedOne.json.messages[0]?.text || ''),
+  );
+
+  const afterMove = (await teacher.fetch('/api/teacher?r=bootstrap')).json;
+  const copy = afterMove.classes.find((c) => c.once_date === dragTo);
+  ok('a one-off now sits on the new day', Boolean(copy));
+  equal('at the time it was dropped', hhmm(copy?.start_time), '19:00');
+  ok(
+    'and the day it left is cancelled',
+    (afterMove.classes.find((c) => c.id === CLASS_LATER)?.skips || []).includes(dragFrom),
+  );
+
+  const movedAll = await teacher.fetch('/api/teacher?r=class.move', {
+    method: 'POST',
+    body: {
+      class_id: CLASS_TODAY,
+      from_date: TODAY,
+      to_date: addDays(TODAY, 1),
+      start_time: '20:00',
+      scope: 'all',
+      notify: false,
+    },
+  });
+  equal('the whole class can be dragged too', movedAll.status, 200);
+  equal('and nobody need be told', movedAll.json.told, 0);
+  equal(
+    'the weekday moved on',
+    (await teacher.fetch('/api/teacher?r=bootstrap')).json.classes.find((c) => c.id === CLASS_TODAY)
+      ?.days?.[0],
+    weekday(addDays(TODAY, 1)),
+  );
+
+  equal(
+    'a class cannot be dragged into the past',
+    (await teacher.fetch('/api/teacher?r=class.move', { method: 'POST', body: { class_id: CLASS_LATER, from_date: dragFrom, to_date: addDays(TODAY, -2), start_time: '19:00' } })).status,
+    400,
+  );
+  equal(
+    "another teacher's class cannot be dragged",
+    (await teacher.fetch('/api/teacher?r=class.move', { method: 'POST', body: { class_id: '00000000-0000-4000-8000-0000000000ff', from_date: dragFrom, to_date: dragTo, start_time: '19:00' } })).status,
+    404,
+  );
+  equal(
+    'and a parent cannot drag anything',
+    (await family.fetch('/api/teacher?r=class.move', { method: 'POST', body: { class_id: CLASS_LATER, from_date: dragFrom, to_date: dragTo, start_time: '19:00' } })).status,
+    401,
   );
 
   section('the clash check (point 13)');

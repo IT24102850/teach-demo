@@ -452,6 +452,155 @@ async function handlePost(req, res, tid, r) {
       return ok(res, { saved: true, class_id: cls.id });
     }
 
+    /**
+     * Point 9, phase 2: a class dragged to another slot on the calendar.
+     *
+     * The browser sends where it was dropped, never what that means - the
+     * move is recomputed here from the stored class, checked for a clash, and
+     * only then applied. Parents are told in the same request, so a move can
+     * never be saved with the message quietly lost.
+     *
+     * `scope` is the question point 9 already asks when editing:
+     *   day - only that session moves; a one-off is created on the new date
+     *         and the repeating class is cancelled for the old one.
+     *   all - the class itself moves; the weekday it was dragged off is
+     *         swapped for the new one and the other days stay as they are.
+     */
+    case 'class.move': {
+      const cls = await mustClass(tid, body.class_id);
+      const fromDate = String(body.from_date || '');
+      const toDate = String(body.to_date || '');
+      const startTime = R.hhmm(body.start_time || '');
+      const scope = body.scope === 'all' ? 'all' : 'day';
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+        return bad(res, 'A move needs the day it came from and the day it goes to');
+      }
+      if (!/^\d{2}:\d{2}$/.test(startTime)) return bad(res, 'Pick a start time');
+
+      // A one-off class cannot be dragged into the past, and neither can a
+      // single session of a repeating one (rule from point 13).
+      if (toDate < R.today()) return bad(res, 'A class cannot be moved into the past');
+
+      const draft = R.movedDraft(cls, { fromDate, toDate, startTime, scope });
+      const problem = R.classDraftError(draft);
+      if (problem) return bad(res, problem);
+
+      const all = await loadClasses(tid);
+      if (!body.allow_clash) {
+        // The old day is about to be cancelled, so the class being moved must
+        // not be counted as standing in its own way.
+        const existing = all.map((c) =>
+          c.id === cls.id && scope === 'day'
+            ? { ...c, skips: [...(c.skips || []), fromDate] }
+            : c,
+        );
+        const clash = R.findClash(existing, draft);
+        if (clash) return clashReply(res, clash);
+      }
+
+      let movedClassId = cls.id;
+
+      if (scope === 'all') {
+        await db.update(
+          'classes',
+          {
+            days: draft.once_date ? [] : draft.days,
+            once_date: draft.once_date,
+            start_time: startTime,
+          },
+          { id: `eq.${cls.id}`, teacher_id: `eq.${tid}` },
+        );
+      } else {
+        // One session only: a one-off copy on the new date...
+        const [copy] = await db.insert('classes', {
+          teacher_id: tid,
+          subject: cls.subject,
+          curriculum: cls.curriculum,
+          grade: cls.grade,
+          title: cls.title,
+          kind: cls.kind,
+          venue_type: cls.venue_type,
+          venue_name: cls.venue_name,
+          area: cls.area,
+          place: cls.place,
+          days: [],
+          start_time: startTime,
+          duration_hours: cls.duration_hours,
+          start_date: toDate,
+          once_date: toDate,
+        });
+        await db.insert(
+          'class_students',
+          cls.student_ids.map((id) => ({ class_id: copy.id, student_id: id })),
+          { returning: 'minimal' },
+        );
+        movedClassId = copy.id;
+
+        // ...and the original day is cancelled, so nobody is booked twice.
+        if (!cls.once_date) {
+          await db.insert(
+            'class_exceptions',
+            { class_id: cls.id, skip_date: fromDate, reason: 'Moved' },
+            { onConflict: 'class_id,skip_date', returning: 'minimal' },
+          );
+        } else {
+          await db.update('classes', { active: false }, { id: `eq.${cls.id}`, teacher_id: `eq.${tid}` });
+        }
+      }
+
+      // Tell the parents. The teacher can turn this off in the sheet - a drag
+      // to tidy up next month's timetable is not always news.
+      const sent = [];
+      if (body.notify !== false) {
+        const kids = await db.select('students', {
+          select: 'id,name,call_name,parent_phone',
+          id: db.inList(cls.student_ids),
+        });
+        const fromLabel = `${DAY_NAMES[R.weekday(fromDate)]} ${fromDate} · ${R.clock12(cls.start_time)}`;
+        const toLabel = `${DAY_NAMES[R.weekday(toDate)]} ${toDate} · ${R.clock12(startTime)}`;
+        for (const student of kids) {
+          const text = render(
+            'moved',
+            {
+              teacher: tname,
+              student: student.call_name || student.name,
+              class: cls.title,
+              from: fromLabel,
+              to: toLabel,
+            },
+            lang,
+          );
+          const result = await notifyParent({
+            tid,
+            student,
+            type: 'class',
+            text,
+            feedText: FEED.moved({ class: cls.title, to: toLabel }),
+            lang,
+          });
+          sent.push({
+            student_id: student.id,
+            name: student.name,
+            text,
+            status: result.status,
+            link: result.link,
+          });
+        }
+      }
+
+      return ok(res, {
+        moved: true,
+        scope,
+        class_id: movedClassId,
+        from_date: fromDate,
+        to_date: toDate,
+        start_time: startTime,
+        told: sent.length,
+        messages: sent,
+      });
+    }
+
     case 'class.delete': {
       await mustClass(tid, body.class_id);
       // Keep the history: the class stops appearing on the calendar, but past

@@ -238,9 +238,12 @@ function dayBlocks(date, { narrow = false, from, to } = {}) {
       const left = width * (b.column || 0);
       const colour = R.subjectColour(session.cls.subject);
       const act = session.date === S.today || session.date < S.today ? 'attend.open' : 'class.open';
+      // Point 9, phase 2: a class that has already been taught cannot be
+      // dragged - it happened, and moving it would rewrite history.
+      const movable = !session.done && session.date >= S.today;
       return `<button type="button" class="blk${session.done ? ' is-done' : ''}" data-a="${act}" data-i="${
         session.key
-      }" style="top:${top}px;height:${height}px;left:${left}%;width:calc(${width}% - 4px);background:${colour}">
+      }"${movable ? ' data-move="1"' : ''} style="top:${top}px;height:${height}px;left:${left}%;width:calc(${width}% - 4px);background:${colour}">
         <b>${esc(R.hhmm(session.cls.start_time))}</b>
         <span>${esc(narrow ? session.cls.subject : session.cls.title)}</span>
         ${narrow ? '' : `<i>${esc(session.cls.place || '')}</i>`}
@@ -255,7 +258,8 @@ function calendarDay() {
   // The grid is drawn even on an empty day: point 9 wants a tappable slot
   // there, not a shrug.
   return `<div class="tl">${hourColumn(from, to)}
-    <div class="tl-grid" style="height:${(to - from) * HOUR_PX}px">
+    <div class="tl-grid" data-from="${from}" data-date="${S.cal.date}"
+      style="height:${(to - from) * HOUR_PX}px">
       ${Array.from({ length: to - from }, (_, i) => `<div class="tl-line" style="top:${i * HOUR_PX}px"></div>`).join('')}
       ${slotCells(S.cal.date, from, to)}
       ${dayBlocks(S.cal.date, { from, to })}
@@ -277,12 +281,12 @@ function calendarWeek() {
       )
       .join('')}</div>
     <div class="tl">${hourColumn(from, to)}
-      <div class="wk-cols" style="height:${(to - from) * HOUR_PX}px">
+      <div class="wk-cols" data-from="${from}" style="height:${(to - from) * HOUR_PX}px">
         ${Array.from({ length: to - from }, (_, i) => `<div class="tl-line" style="top:${i * HOUR_PX}px"></div>`).join('')}
         ${dates
           .map(
             (d) =>
-              `<div class="wk-col${d === S.today ? ' today' : ''}">${dayBlocks(d, {
+              `<div class="wk-col${d === S.today ? ' today' : ''}" data-date="${d}">${dayBlocks(d, {
                 narrow: true,
                 from,
                 to,
@@ -1095,6 +1099,135 @@ export const ACTIONS = FORM_ACTIONS;
 let timerHandle = null;
 let searchHandle = null;
 
+/* ------------------------------------------ point 9, phase 2 · drag a class */
+
+/** Hold this long before a press becomes a drag rather than a scroll. */
+const HOLD_MS = 320;
+/** Move more than this before the hold finishes and it was a scroll. */
+const SLOP_PX = 10;
+
+/**
+ * Press and hold a class, then drag it to another time - or, in the week
+ * view, another day.
+ *
+ * Press-and-hold rather than drag-on-touch: the calendar scrolls, and a
+ * finger that starts moving straight away is almost always trying to scroll
+ * rather than to reschedule a lesson. Nothing is saved by the drag itself; it
+ * opens a sheet that shows the move, warns about a clash, and asks whether
+ * the parents should be told.
+ */
+function wireDrag(ctx) {
+  const grid = document.querySelector('.tl-grid[data-from], .wk-cols[data-from]');
+  if (!grid || grid.dataset.dragWired) return;
+  grid.dataset.dragWired = '1';
+
+  const gridFrom = Number(grid.dataset.from) || 0;
+  let drag = null;
+
+  const columnAt = (clientX) => {
+    const columns = [...grid.querySelectorAll('.wk-col[data-date]')];
+    if (!columns.length) return grid.dataset.date || null;
+    for (const column of columns) {
+      const box = column.getBoundingClientRect();
+      if (clientX >= box.left && clientX <= box.right) return column.dataset.date;
+    }
+    // Dragged off the side: clamp to the nearest column rather than refusing.
+    const first = columns[0].getBoundingClientRect();
+    return clientX < first.left
+      ? columns[0].dataset.date
+      : columns[columns.length - 1].dataset.date;
+  };
+
+  const stop = () => {
+    if (!drag) return;
+    clearTimeout(drag.hold);
+    drag.el.classList.remove('is-dragging');
+    drag.el.style.transform = '';
+    drag.el.releasePointerCapture?.(drag.pointerId);
+    drag = null;
+  };
+
+  grid.addEventListener('pointerdown', (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    const el = event.target.closest('.blk[data-move]');
+    if (!el) return;
+
+    drag = {
+      el,
+      key: el.dataset.i,
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      armed: false,
+      hold: setTimeout(() => {
+        if (!drag) return;
+        drag.armed = true;
+        drag.el.classList.add('is-dragging');
+        drag.el.setPointerCapture?.(drag.pointerId);
+        try {
+          navigator.vibrate?.(12);
+        } catch {
+          /* not every device allows it */
+        }
+      }, HOLD_MS),
+    };
+  });
+
+  grid.addEventListener('pointermove', (event) => {
+    if (!drag) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+
+    if (!drag.armed) {
+      // Still deciding: a real movement before the hold finishes is a scroll.
+      if (Math.abs(dx) > SLOP_PX || Math.abs(dy) > SLOP_PX) stop();
+      return;
+    }
+    event.preventDefault();
+    drag.el.style.transform = `translate(${dx}px, ${dy}px)`;
+  });
+
+  grid.addEventListener('pointerup', (event) => {
+    if (!drag) return;
+    if (!drag.armed) return stop();
+
+    const { key, el } = drag;
+    const dy = event.clientY - drag.y;
+    const [classId, fromDate] = String(key).split('|');
+    const cls = classById(classId);
+
+    const toDate = columnAt(event.clientX) || fromDate;
+    const startMinutes = R.snapMinutes(
+      gridFrom * 60 + ((parseFloat(el.style.top) || 0) + dy) / HOUR_PX * 60,
+    );
+    stop();
+
+    if (!cls) return;
+    const startTime = R.fromMinutes(startMinutes);
+    if (!R.movedAnything(cls, { fromDate, toDate, startTime })) return;
+
+    // It was a drag, not a tap: do not let the click open the class as well.
+    suppressNextClick();
+    FORM_ACTIONS['class.moved'](
+      JSON.stringify({ class_id: classId, from_date: fromDate, to_date: toDate, start_time: startTime }),
+      null,
+      ctx,
+    );
+  });
+
+  grid.addEventListener('pointercancel', stop);
+}
+
+/** Swallow the click that follows a drag, so the class does not also open. */
+function suppressNextClick() {
+  const swallow = (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+  };
+  document.addEventListener('click', swallow, true);
+  setTimeout(() => document.removeEventListener('click', swallow, true), 350);
+}
+
 /**
  * Hooks that need the real DOM: the live search, the running timer, and
  * scrolling to "now".
@@ -1137,9 +1270,11 @@ export function after(ctx) {
     tick();
   }
 
+  /* Point 9, phase 2: press and hold a class to drag it somewhere else. */
+  wireDrag(ctx);
+
   if (S.tab === 'classes' && !S.sub && S.cal.mode !== 'month' && S.cal.date === S.today) {
     const line = document.querySelector('.now');
     if (line) line.scrollIntoView({ block: 'center' });
   }
-  void ctx;
 }

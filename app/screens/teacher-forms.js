@@ -307,7 +307,8 @@ function classSheet() {
 
 function timeSheet() {
   const draft = classDraft();
-  const clash = classForm.allowClash ? null : R.findClash(classes(), draft);
+  // Shown whether or not it has been accepted, for the same reason as above.
+  const clash = R.findClash(classes(), draft);
   const travel = clash ? null : R.travelWarning(classes(), draft);
   const custom = !R.DURATION_CHOICES.includes(Number(classForm.duration_hours));
   const known = R.startChoices().includes(R.hhmm(classForm.start_time));
@@ -380,7 +381,120 @@ function timeSheet() {
           : ''
     }
 
-    ${button(clash ? t('save_anyway') : t('done'), { act: 'time.done', cls: clash ? 'd wide' : 'wide' })}
+    ${button(clash && !classForm.allowClash ? t('save_anyway') : t('done'), {
+      act: 'time.done',
+      cls: clash ? 'd wide' : 'wide',
+    })}
+  `);
+}
+
+/* =========================================================================
+   Point 9, phase 2: a class dragged to a new slot.
+   ========================================================================= */
+
+/** What the drag proposed, until the teacher confirms or cancels it. */
+const moveForm = {
+  class_id: null,
+  from_date: '',
+  to_date: '',
+  start_time: '',
+  scope: 'day',
+  notify: true,
+  /* A clash the server reported that this side could not see for itself. */
+  clash: null,
+  /* The clash currently on screen, so saving knows it was acknowledged. */
+  shownClash: null,
+  /* The teacher saw it and meant it. */
+  allowClash: false,
+};
+
+/**
+ * The sheet a drag opens.
+ *
+ * A drag is one gesture and a WhatsApp message cannot be unsent, so nothing
+ * is saved and nobody is told until this is confirmed. It shows where the
+ * class came from and where it is going, names anything it would now clash
+ * with, and lets the teacher decide whether this moves one session or the
+ * class itself.
+ */
+function moveSheet() {
+  const cls = classById(moveForm.class_id);
+  if (!cls) return closeSheet();
+
+  const repeating = !cls.once_date && (cls.days || []).length > 0;
+  const scope = repeating ? moveForm.scope : 'all';
+  const draft = R.movedDraft(cls, { ...moveForm, scope });
+
+  // The day it is leaving is about to be cancelled, so the class being moved
+  // must not be reported as standing in its own way.
+  const existing = classes().map((c) =>
+    c.id === cls.id && scope === 'day'
+      ? { ...c, skips: [...(c.skips || []), moveForm.from_date] }
+      : c,
+  );
+  /*
+   * A known clash is always shown. `allowClash` records that the teacher has
+   * seen this one and still means it - hiding the warning the moment they
+   * confirm would leave them staring at a button with no idea why it changed.
+   */
+  const clash = R.findClash(existing, draft) || moveForm.clash;
+  moveForm.shownClash = clash || null;
+  const inPast = moveForm.to_date < S.today;
+  const count = (cls.student_ids || []).length;
+
+  openSheet(`
+    ${sheetTitle(t('move_class'))}
+    ${muted(cls.title)}
+
+    ${card(
+      `<div class="row sp"><span class="mu">${esc(t('move_from'))}</span>
+         <b>${esc(R.whenLabel(moveForm.from_date, cls.start_time, S.lang))}</b></div>
+       <div class="row sp mt-s"><span class="mu">${esc(t('move_to'))}</span>
+         <b style="color:var(--tt)">${esc(
+           R.whenLabel(moveForm.to_date, moveForm.start_time, S.lang),
+         )}</b></div>
+       ${muted(R.durationLabel(cls.duration_hours))}`,
+    )}
+
+    ${
+      repeating
+        ? `${label(t('which_days_edit'))}
+           ${segmented(
+             [
+               { value: 'day', label: t('this_day_only') },
+               { value: 'all', label: t('all_days') },
+             ],
+             scope,
+             'class.movescope',
+           )}`
+        : ''
+    }
+
+    ${
+      inPast
+        ? card(`<b>⚠ ${esc(t('no_past_move'))}</b>`, { cls: 'warn' })
+        : clash
+          ? card(
+              `<b>⚠ ${esc(
+                t('clash_with', {
+                  title: clash.title,
+                  time: R.slotLabel(clash.start_time, clash.duration_hours),
+                  day: R.clashDay(draft, clash, S.lang),
+                }),
+              )}</b>`,
+              { cls: 'warn' },
+            )
+          : ''
+    }
+
+    ${checkbox(t('tell_parents_wa', { n: count }), { act: 'class.movenotify', on: moveForm.notify })}
+
+    ${actionButton(clash && !moveForm.allowClash ? t('save_anyway') : t('move_class'), {
+      act: 'class.movesave',
+      cls: clash ? 'd wide' : 'wide',
+      disabled: inPast,
+    })}
+    ${button(t('cancel'), { act: 'sheet.close', cls: 'o wide' })}
   `);
 }
 
@@ -840,6 +954,77 @@ export const ACTIONS = {
     if (!cls) return;
     openEditForm(cls, scope === 'day' ? val('edit-date') || S.cal.date : null);
   },
+  /** A drag finished: show what it would do, before anything is saved. */
+  'class.moved': (payload) => {
+    let dropped;
+    try {
+      dropped = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    Object.assign(moveForm, {
+      ...dropped,
+      // Dragging one block most naturally moves that one session; the teacher
+      // can widen it to the whole class in the sheet.
+      scope: 'day',
+      notify: true,
+      clash: null,
+      shownClash: null,
+      allowClash: false,
+    });
+    moveSheet();
+  },
+  'class.movescope': (scope) => {
+    moveForm.scope = scope === 'all' ? 'all' : 'day';
+    // A different scope is a different move, so an old clash no longer applies.
+    moveForm.clash = null;
+    moveForm.allowClash = false;
+    moveSheet();
+  },
+  'class.movenotify': () => {
+    moveForm.notify = !moveForm.notify;
+    moveSheet();
+  },
+  'class.movesave': async (_a, _el, ctx) => {
+    const cls = classById(moveForm.class_id);
+    if (!cls) return closeSheet();
+    const repeating = !cls.once_date && (cls.days || []).length > 0;
+
+    try {
+      const result = await api.teacherDo('class.move', {
+        class_id: moveForm.class_id,
+        from_date: moveForm.from_date,
+        to_date: moveForm.to_date,
+        start_time: moveForm.start_time,
+        scope: repeating ? moveForm.scope : 'all',
+        notify: moveForm.notify,
+        // Pressing the button while a clash is on screen is the confirmation.
+        allow_clash: Boolean(moveForm.shownClash),
+      });
+      closeSheet();
+      S.cal.date = moveForm.to_date;
+      await reload(ctx);
+      toast(
+        result.told
+          ? t('class_moved_told', { n: result.told })
+          : t('class_moved'),
+      );
+      // Without the WhatsApp Cloud API the server hands back wa.me links and
+      // the teacher sends them from their own WhatsApp, one tap each.
+      const manual = (result.messages || []).filter((m) => m.link);
+      if (manual.length) openWhatsAppQueue(manual);
+    } catch (err) {
+      if (err.status === 409) {
+        // Point 13: the server saw a clash this side could not. Show it, and
+        // let the next press be the "Save anyway".
+        moveForm.clash = err.data?.clash || { title: '', start_time: '' };
+        moveSheet();
+        return;
+      }
+      toast(err.message, 'bad');
+    }
+  },
+
   'class.remove': async (id, _el, ctx) => {
     if (!S.sub.sure) {
       S.sub.sure = true;

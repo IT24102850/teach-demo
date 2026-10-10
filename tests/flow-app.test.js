@@ -143,6 +143,9 @@ const bootstrap = () => ({
 });
 
 let lastFinish = null;
+let lastMove = null;
+/* Dropping on this day is the one the stub reports a clash for. */
+const CLASH_DAY = '2026-03-26';
 
 installFetch({
   'GET /api/auth?r=config': { configured: true, code_length: 4, demo_hint: false },
@@ -188,6 +191,33 @@ installFetch({
         text: "Hi, this is Nimal Sir. Kasun Perera was absent from today's Grade 11 Maths (4:00 PM). Please let me know if there is a problem. Thank you.",
         status: 'sent',
         link: null,
+      })),
+    };
+  },
+
+  'POST /api/teacher?r=class.move': (body) => {
+    lastMove = body;
+    if (body.to_date === CLASH_DAY && !body.allow_clash) {
+      return {
+        __status: 409,
+        body: {
+          error: 'That overlaps Grade 11 Science (17:30).',
+          clash: { id: 'c9', title: 'Grade 11 Science', start_time: '17:30' },
+        },
+      };
+    }
+    const told = body.notify === false ? 0 : 2;
+    return {
+      moved: true,
+      scope: body.scope,
+      class_id: body.scope === 'all' ? CLASS : 'c-copy',
+      told,
+      messages: Array.from({ length: told }, (_, i) => ({
+        student_id: [KASUN, AMAYA][i],
+        name: db.students[i].name,
+        text: "Hi, this is Nimal Sir. Kasun's Grade 11 Maths has moved from Wednesday to Thursday.",
+        status: 'manual',
+        link: 'https://wa.me/94771234567?text=moved',
       })),
     };
   },
@@ -394,6 +424,106 @@ test('point 13: moving off the clash clears the warning', async () => {
   assert.doesNotMatch(html, /⚠ Clash/);
   assert.match(html, /7:00 PM – 9:30 PM/);
   await dom.click('time.done');
+  await dom.click('sheet.close');
+});
+
+/* ===================== point 9, phase 2 · drag a class, tell the parents == */
+
+/**
+ * The drag gesture itself needs real pointer events and a laid-out grid, so
+ * it is checked by reading the source (see plan.test.js). What is driven here
+ * is everything after the drop: the sheet it opens, the choices on it, and
+ * the one request it finally sends.
+ */
+const DROP = JSON.stringify({
+  class_id: CLASS,
+  from_date: '2026-03-18', // a Wednesday
+  to_date: '2026-03-19', // the Thursday
+  start_time: '17:00',
+});
+
+test('point 9: a drop opens a sheet and saves nothing yet', async () => {
+  await dom.click('nav.tab', 'classes');
+  await dom.click('class.moved', DROP);
+
+  const html = sheet();
+  assert.match(html, /Move class/);
+  assert.match(html, /Grade 11 Maths/);
+  assert.match(html, /Wednesday 18 Mar · 4:00 PM/, 'where it came from');
+  assert.match(html, /Thursday 19 Mar · 5:00 PM/, 'where it is going');
+  assert.match(html, /2 h 30 m/, 'the length is unchanged');
+  assert.equal(lastMove, null, 'nothing has been sent');
+});
+
+test('point 9: the sheet asks whether one session moves or the class', () => {
+  const html = sheet();
+  assert.match(html, /data-a="class\.movescope" data-i="day"/);
+  assert.match(html, /data-a="class\.movescope" data-i="all"/);
+  assert.match(html, /aria-selected="true"[^>]*data-a="class\.movescope" data-i="day"/, 'one session by default');
+});
+
+test('point 9: telling the parents is offered, on by default, and countable', () => {
+  const html = sheet();
+  assert.match(html, /Tell the parents on WhatsApp \(2\)/, 'both students in the class');
+  assert.match(html, /class="check on"/, 'ticked by default');
+});
+
+test('point 9: the teacher can untick it, and then nobody is told', async () => {
+  await dom.click('class.movenotify');
+  assert.match(sheet(), /class="check"/, 'the tick is off');
+  assert.doesNotMatch(sheet(), /class="check on"/);
+
+  await dom.click('class.movesave');
+  assert.equal(lastMove.notify, false);
+  assert.equal(toast(), 'Class moved', 'and the toast says nobody was told');
+});
+
+test('point 9: confirming sends one message per student', async () => {
+  lastMove = null;
+  await dom.click('class.moved', DROP);
+  await dom.click('class.movesave');
+
+  assert.ok(lastMove, 'the move was sent');
+  assert.equal(lastMove.class_id, CLASS);
+  assert.equal(lastMove.from_date, '2026-03-18');
+  assert.equal(lastMove.to_date, '2026-03-19');
+  assert.equal(lastMove.start_time, '17:00');
+  assert.equal(lastMove.scope, 'day', 'one session, as the sheet offered');
+  assert.equal(lastMove.notify, true);
+  assert.match(toast(), /Class moved · 2 told/);
+
+  // Without the WhatsApp Cloud API the server hands back wa.me links, and the
+  // teacher sends them from their own WhatsApp one tap at a time.
+  assert.match(sheet(), /wa\.me/, 'the links are offered');
+  await dom.click('sheet.close');
+});
+
+test('point 9: choosing "all days" moves the class, not the session', async () => {
+  lastMove = null;
+  await dom.click('class.moved', DROP);
+  await dom.click('class.movescope', 'all');
+  assert.match(sheet(), /aria-selected="true"[^>]*data-a="class\.movescope" data-i="all"/);
+
+  await dom.click('class.movesave');
+  assert.equal(lastMove.scope, 'all');
+  await dom.click('sheet.close');
+});
+
+test('point 9: a clash is named and "Save anyway" is offered', async () => {
+  lastMove = null;
+  await dom.click(
+    'class.moved',
+    JSON.stringify({ class_id: CLASS, from_date: '2026-03-18', to_date: CLASH_DAY, start_time: '17:00' }),
+  );
+  await dom.click('class.movesave');
+
+  const html = sheet();
+  assert.match(html, /Grade 11 Science/, 'the class in the way is named');
+  assert.match(html, /Save anyway\?/);
+  assert.equal(lastMove.allow_clash, false, 'the first attempt did not force it');
+
+  await dom.click('class.movesave');
+  assert.equal(lastMove.allow_clash, true, 'the second one did');
   await dom.click('sheet.close');
 });
 

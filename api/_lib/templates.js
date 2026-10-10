@@ -18,6 +18,10 @@ const EN = {
     `Please let me know if there is a problem. Thank you.`,
   fee: (v) =>
     `Hi, this is ${v.teacher}. A gentle reminder that ${v.student}'s fees for ${v.classes} classes (${money(v.amount)}) are pending. You can pay by bank transfer and send me the slip here. Thank you!`,
+  // Point 9, phase 2: the class was dragged to another slot.
+  moved: (v) =>
+    `Hi, this is ${v.teacher}. ${v.student}'s ${v.class} has moved from ${v.from} to ${v.to}. ` +
+    `Please come at the new time. Thank you.`,
   paid: (v) =>
     `Payment of ${money(v.amount)} received for ${v.student}` +
     `${v.receipt ? ` (receipt ${v.receipt})` : ''}.` +
@@ -39,6 +43,10 @@ const TA = {
     `வணக்கம், ${v.teacher || ''} பேசுகிறேன். ${v.student} இன்றைய ${v.class || v.subject} வகுப்பிற்கு${v.time ? ` (${v.time})` : ''} வரவில்லை. ஏதேனும் பிரச்சினை இருந்தால் தெரிவிக்கவும். நன்றி.`,
   fee: (v) =>
     `வணக்கம், ${v.teacher} பேசுகிறேன். ${v.student} அவர்களின் ${v.classes} வகுப்புகளுக்கான கட்டணம் (${money(v.amount)}) செலுத்தப்படவில்லை. வங்கி பணப்பரிமாற்றம் செய்து ரசீதை இங்கே அனுப்பலாம். நன்றி!`,
+  moved: (v) =>
+    `வணக்கம், ${v.teacher} பேசுகிறேன். ${v.student} அவர்களின் ${v.class} வகுப்பு ` +
+    `${v.from} இலிருந்து ${v.to} க்கு மாற்றப்பட்டது. ` +
+    `புதிய நேரத்திற்கு வரவும். நன்றி.`,
   paid: (v) =>
     `${v.student} அவர்களுக்கான ${money(v.amount)} கட்டணம் கிடைத்தது` +
     `${v.receipt ? ` (${v.receipt})` : ''}.` +
@@ -63,6 +71,7 @@ export const FEED = {
   fee: (v) => `Fee reminder: ${v.classes} classes pending (${money(v.amount)})`,
   absent: (v) => `Marked absent for ${v.subject}`,
   class: (v) => `${v.subject} on ${v.day} at ${v.time}`,
+  moved: (v) => `${v.class} moved to ${v.to}`,
   paid: (v) =>
     `Payment of ${money(v.amount)} received${v.receipt ? ` · receipt ${v.receipt}` : ''}`,
   reversed: (v) => `A payment of ${money(v.amount)} was undone`,

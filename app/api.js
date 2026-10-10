@@ -4,9 +4,14 @@
  */
 
 class ApiError extends Error {
-  constructor(message, status) {
+  /**
+   * `data` is the whole body, not just the message. A 409 from a class move
+   * names the class that is in the way, and the sheet needs that to show it.
+   */
+  constructor(message, status, data = null) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -31,7 +36,7 @@ async function call(path, { method = 'GET', body } = {}) {
       data = { error: text };
     }
   }
-  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status);
+  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`, res.status, data);
   return data;
 }
 

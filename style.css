@@ -1669,3 +1669,22 @@ body.busy .phone {
     animation: none;
   }
 }
+
+/* ------------------------------ point 9, phase 2 · dragging a class ------- */
+
+/* A movable class says so on a pointer device, and never lets the browser
+   turn the press-and-hold into a text selection or a native image drag. */
+.blk[data-move] {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.blk.is-dragging {
+  z-index: 9;
+  opacity: 0.92;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  transform-origin: center;
+  cursor: grabbing;
+  transition: none;
+}

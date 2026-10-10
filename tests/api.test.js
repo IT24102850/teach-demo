@@ -633,6 +633,237 @@ test('a teacher cannot touch another teacher’s class', async () => {
   assert.equal(res.statusCode, 404);
 });
 
+/* ============== point 9 phase 2: a class dragged to another slot ========= */
+
+/*
+ * The fixture class runs Monday and Wednesday at 16:00 for 1.5 hours.
+ *
+ * These dates are worked out from today rather than written down, because a
+ * class may not be dragged into the past - a fixed date would start failing
+ * the morning after it was written.
+ */
+const shiftDay = (date, n) => {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+const RIGHT_NOW = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Colombo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
+
+/** The next Wednesday from today, and the Thursday after it. */
+const WED = (() => {
+  let date = RIGHT_NOW;
+  while (new Date(`${date}T00:00:00Z`).getUTCDay() !== 3) date = shiftDay(date, 1);
+  return date;
+})();
+const THU = shiftDay(WED, 1);
+
+const move = (cookie, body) =>
+  call(teacherApi, { method: 'POST', url: '/api/teacher?r=class.move', cookie, body });
+
+test('dragging one session makes a one-off and cancels that day', async () => {
+  const cookie = await signInTeacher();
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+    scope: 'day',
+  });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.scope, 'day');
+
+  const copy = DB.classes.find((c) => c.id === res.json.class_id);
+  assert.ok(copy, 'a class was created for the new day');
+  assert.equal(copy.once_date, THU, 'as a one-off on the day it was dropped');
+  assert.equal(copy.start_time, '17:00');
+  assert.deepEqual(copy.days, [], 'it does not repeat');
+  assert.equal(Number(copy.duration_hours), 1.5, 'moving does not change the length');
+  assert.equal(copy.venue_type, 'area', 'and it keeps where it is held');
+  assert.equal(copy.area, 'Nugegoda');
+  assert.equal(
+    DB.class_students.filter((l) => l.class_id === copy.id).length,
+    2,
+    'with the same students',
+  );
+
+  const skip = DB.class_exceptions.find((x) => x.class_id === CLASS && x.skip_date === WED);
+  assert.ok(skip, 'the repeating class is cancelled on the day it left');
+  assert.equal(DB.classes.find((c) => c.id === CLASS).active, true, 'the class itself stays');
+});
+
+test('dragging the whole class swaps that weekday and keeps the others', async () => {
+  const cookie = await signInTeacher();
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+    scope: 'all',
+  });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  const cls = DB.classes.find((c) => c.id === CLASS);
+  assert.deepEqual(cls.days, [0, 3], 'Wednesday became Thursday, Monday stayed');
+  assert.equal(cls.start_time, '17:00');
+  assert.equal(DB.classes.length, 1, 'nothing was copied');
+  assert.equal((DB.class_exceptions || []).length, 0, 'and no day was cancelled');
+});
+
+test('every student in the moved class gets one WhatsApp message', async () => {
+  const cookie = await signInTeacher();
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+    scope: 'day',
+  });
+
+  assert.equal(res.json.told, 2, 'both students in the class');
+  assert.equal(res.json.messages.length, 2);
+  for (const m of res.json.messages) {
+    assert.match(m.text, /has moved from/);
+    assert.ok(m.text.includes(`Wednesday ${WED}`), `names the day it left: ${m.text}`);
+    assert.ok(m.text.includes(`Thursday ${THU} · 5:00 PM`), `and where it goes: ${m.text}`);
+    assert.ok(m.link?.startsWith('https://wa.me/'), 'with a link to send it by hand');
+  }
+  assert.equal(DB.events.filter((e) => e.type === 'class').length, 2, 'one event each');
+  assert.match(DB.events[0].text, /moved to/);
+});
+
+test('the teacher can move a class without telling anyone', async () => {
+  const cookie = await signInTeacher();
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+    scope: 'day',
+    notify: false,
+  });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.told, 0);
+  assert.deepEqual(res.json.messages, []);
+  assert.equal(DB.events.length, 0, 'nothing was sent and nothing was logged');
+  assert.ok(DB.classes.find((c) => c.id === res.json.class_id), 'but the class did move');
+});
+
+test('a move onto another class is refused, and names it', async () => {
+  const cookie = await signInTeacher();
+  DB.classes.push({
+    id: 'aaaaaaaa-0000-4000-8000-00000000000a',
+    teacher_id: TID,
+    subject: 'Science',
+    curriculum: 'Local',
+    grade: 11,
+    title: 'Grade 11 Science',
+    kind: 'individual',
+    venue_type: 'area',
+    area: 'Nugegoda',
+    place: 'Nugegoda',
+    days: [3], // Thursday
+    start_time: '17:30:00',
+    duration_hours: 1,
+    start_date: '2026-01-05',
+    once_date: null,
+    active: true,
+    class_students: [{ student_id: KASUN }],
+    class_exceptions: [],
+  });
+
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+    scope: 'day',
+  });
+  assert.equal(res.statusCode, 409);
+  assert.match(res.json.error, /Grade 11 Science/);
+  assert.equal(res.json.clash.start_time, '17:30');
+  assert.equal((DB.class_exceptions || []).length, 0, 'and nothing was changed');
+  assert.equal(DB.events.length, 0, 'and nobody was told');
+
+  const anyway = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+    scope: 'day',
+    allow_clash: true,
+  });
+  assert.equal(anyway.statusCode, 200, '"Save anyway" lets a deliberate overlap through');
+});
+
+test('moving a session later the same day is not a clash with itself', async () => {
+  const cookie = await signInTeacher();
+  // The Wednesday session is cancelled as part of the move, so the class it
+  // came from must not be reported as standing in its own way.
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: WED,
+    start_time: '17:00',
+    scope: 'day',
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+});
+
+test('a class cannot be dragged into the past', async () => {
+  const cookie = await signInTeacher();
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: '2020-01-06',
+    start_time: '17:00',
+    scope: 'day',
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /past/);
+});
+
+test('a move with no dates, or a bad time, is refused', async () => {
+  const cookie = await signInTeacher();
+  for (const body of [
+    { class_id: CLASS, to_date: THU, start_time: '17:00' },
+    { class_id: CLASS, from_date: WED, start_time: '17:00' },
+    { class_id: CLASS, from_date: WED, to_date: 'tomorrow', start_time: '17:00' },
+    { class_id: CLASS, from_date: WED, to_date: THU, start_time: 'half five' },
+  ]) {
+    const res = await move(cookie, body);
+    assert.equal(res.statusCode, 400, JSON.stringify(body));
+  }
+});
+
+test("another teacher's class cannot be moved", async () => {
+  const cookie = await signInTeacher();
+  const res = await move(cookie, {
+    class_id: '00000000-0000-4000-8000-0000000000ff',
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+  });
+  assert.equal(res.statusCode, 404);
+});
+
+test('a parent cannot move a class', async () => {
+  const cookie = await signInFamily();
+  const res = await move(cookie, {
+    class_id: CLASS,
+    from_date: WED,
+    to_date: THU,
+    start_time: '17:00',
+  });
+  assert.equal(res.statusCode, 401);
+});
+
 /* ===================================== point 10: start, end and absence == */
 
 test('Start class records the real start time and nothing else', async () => {

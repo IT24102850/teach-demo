@@ -784,3 +784,191 @@ test('the browser and the server agree on every shared v2 rule', () => {
     assert.deepEqual(CR.paymentOutcome(6000, amount), SR.paymentOutcome(6000, amount), String(amount));
   }
 });
+
+/* =========================================================================
+   Point 9, phase 2 · dragging a class to a new slot, and telling the parents
+   ========================================================================= */
+
+const dragged = (over = {}) => ({
+  id: 'c1',
+  kind: 'group',
+  student_ids: ['a', 'b'],
+  venue_type: 'institute',
+  venue_name: 'Bright Minds',
+  area: 'Nugegoda',
+  days: [0, 2], // Monday and Wednesday
+  start_time: '16:00',
+  duration_hours: 2.5,
+  start_date: '2026-01-05',
+  once_date: null,
+  ...over,
+});
+
+// 18 March 2026 is a Wednesday, 19 March a Thursday.
+const WED = '2026-03-18';
+const THU = '2026-03-19';
+
+test('drag: a dropped time lands on a quarter hour', () => {
+  assert.equal(CR.snapMinutes(967), 960, '16:07 becomes 16:00');
+  assert.equal(CR.snapMinutes(968), 975, '16:08 becomes 16:15');
+  assert.equal(CR.snapMinutes(-20), 0, 'dragged above the grid, clamped');
+  assert.equal(CR.snapMinutes(99999) < 24 * 60, true, 'and never past midnight');
+  assert.equal(CR.fromMinutes(CR.snapMinutes(967)), '16:00');
+  assert.deepEqual(CR.snapMinutes(967), SR.snapMinutes(967), 'the server agrees');
+});
+
+test('drag: "this day only" becomes a one-off on the new date', () => {
+  const draft = CR.movedDraft(dragged(), {
+    fromDate: WED,
+    toDate: THU,
+    startTime: '17:00',
+    scope: 'day',
+  });
+  assert.equal(draft.id, null, 'it is a new class, not the one being dragged');
+  assert.equal(draft.once_date, THU);
+  assert.deepEqual(draft.days, []);
+  assert.equal(draft.start_time, '17:00');
+  assert.equal(draft.duration_hours, 2.5, 'moving does not change the length');
+  assert.equal(CR.classDraftError(draft), null, 'and it is a class that can be saved');
+});
+
+test('drag: "all days" swaps that weekday and leaves the others alone', () => {
+  const draft = CR.movedDraft(dragged(), {
+    fromDate: WED,
+    toDate: THU,
+    startTime: '17:00',
+    scope: 'all',
+  });
+  assert.equal(draft.id, 'c1', 'the same class moves');
+  assert.equal(draft.once_date, null);
+  assert.deepEqual(draft.days, [0, 3], 'Wednesday becomes Thursday, Monday stays');
+  assert.equal(CR.classDraftError(draft), null);
+});
+
+test('drag: dropping on the same weekday only changes the time', () => {
+  const draft = CR.movedDraft(dragged(), {
+    fromDate: WED,
+    toDate: WED,
+    startTime: '18:00',
+    scope: 'all',
+  });
+  assert.deepEqual(draft.days, [0, 2], 'the days are untouched');
+  assert.equal(draft.start_time, '18:00');
+});
+
+test('drag: a one-off class moves whatever scope is asked for', () => {
+  const once = dragged({ days: [], once_date: WED });
+  for (const scope of ['day', 'all']) {
+    const draft = CR.movedDraft(once, { fromDate: WED, toDate: THU, startTime: '17:00', scope });
+    assert.equal(draft.once_date, THU, scope);
+    assert.deepEqual(draft.days, [], scope);
+  }
+});
+
+test('drag: a drop that lands where it started is a tap, not a move', () => {
+  const cls = dragged();
+  assert.equal(CR.movedAnything(cls, { fromDate: WED, toDate: WED, startTime: '16:00' }), false);
+  assert.equal(CR.movedAnything(cls, { fromDate: WED, toDate: WED, startTime: '16:15' }), true);
+  assert.equal(CR.movedAnything(cls, { fromDate: WED, toDate: THU, startTime: '16:00' }), true);
+});
+
+test('drag: the moved class is still checked for a clash', () => {
+  const others = [
+    dragged({ id: 'c1' }),
+    { id: 'c2', days: [3], start_time: '17:30', duration_hours: 1, active: true },
+  ];
+  const onto = CR.movedDraft(dragged(), {
+    fromDate: WED,
+    toDate: THU,
+    startTime: '17:00',
+    scope: 'day',
+  });
+  assert.equal(CR.findClash(others, onto)?.id, 'c2', 'it lands on the Thursday class');
+
+  const clear = CR.movedDraft(dragged(), {
+    fromDate: WED,
+    toDate: THU,
+    startTime: '19:00',
+    scope: 'day',
+  });
+  assert.equal(CR.findClash(others, clear), null);
+});
+
+test('drag: moving one session does not clash with the day it is leaving', () => {
+  // The repeating class is cancelled on the old date, so dragging a Wednesday
+  // session to later the same Wednesday must not report the class it came from.
+  const original = dragged();
+  const draft = CR.movedDraft(original, {
+    fromDate: WED,
+    toDate: WED,
+    startTime: '17:00',
+    scope: 'day',
+  });
+  const naive = CR.findClash([original], draft);
+  assert.ok(naive, 'without the pending cancellation it looks like a clash');
+
+  const withSkip = [{ ...original, skips: [WED] }];
+  assert.equal(CR.findClash(withSkip, draft), null, 'with it, the slot is free');
+});
+
+test('drag: the parent is told which class moved, and from when to when', () => {
+  const text = message(
+    'moved',
+    {
+      teacher: 'Nimal Sir',
+      student: 'Kasun',
+      class: 'Grade 11 Maths',
+      from: 'Wednesday 18 Mar · 4:00 PM',
+      to: 'Thursday 19 Mar · 5:00 PM',
+    },
+    'en',
+  );
+  assert.match(text, /Hi, this is Nimal Sir\./);
+  assert.match(text, /Kasun's Grade 11 Maths has moved/);
+  assert.match(text, /from Wednesday 18 Mar · 4:00 PM to Thursday 19 Mar · 5:00 PM/);
+
+  const ta = message(
+    'moved',
+    { teacher: 'Nimal Sir', student: 'Kasun', class: 'Maths', from: 'A', to: 'B' },
+    'ta',
+  );
+  assert.match(ta, /Kasun/);
+  assert.match(ta, /Maths/);
+});
+
+test('drag: the label the message and the sheet both use', () => {
+  assert.equal(CR.whenLabel(THU, '17:00'), 'Thursday 19 Mar · 5:00 PM');
+});
+
+test('drag: nothing is saved or sent until the sheet is confirmed', () => {
+  const teacher = read('app/screens/teacher.js');
+  const forms = read('app/screens/teacher-forms.js');
+
+  // The drag opens the sheet. It must not post anything by itself.
+  const drop = teacher.slice(teacher.indexOf("grid.addEventListener('pointerup'"));
+  assert.doesNotMatch(drop.slice(0, 2000), /teacherDo/, 'the drop itself writes nothing');
+  assert.match(drop, /FORM_ACTIONS\['class\.moved'\]/);
+
+  // Only the confirm button posts, and the message can be turned off.
+  assert.match(forms, /'class\.movesave':/);
+  assert.match(forms, /api\.teacherDo\('class\.move'/);
+  assert.match(forms, /notify: moveForm\.notify/);
+  assert.match(forms, /'class\.movenotify':/);
+});
+
+test('drag: a class that already happened cannot be dragged', () => {
+  const teacher = read('app/screens/teacher.js');
+  assert.match(teacher, /const movable = !session\.done && session\.date >= S\.today;/);
+  assert.match(teacher, /\$\{movable \? ' data-move="1"' : ''\}/);
+  assert.match(teacher, /\.blk\[data-move\]/, 'and only those blocks are wired');
+});
+
+test('drag: press and hold, so a scroll is never a reschedule', () => {
+  const teacher = read('app/screens/teacher.js');
+  assert.match(teacher, /const HOLD_MS = 320/);
+  assert.match(teacher, /const SLOP_PX = 10/);
+  assert.match(teacher, /if \(Math\.abs\(dx\) > SLOP_PX \|\| Math\.abs\(dy\) > SLOP_PX\) stop\(\);/);
+  // The click that follows a real drag must not also open the class.
+  assert.match(teacher, /function suppressNextClick\(\)/);
+  assert.match(CSS, /\.blk\[data-move\]\s*\{[\s\S]*?touch-action: none/);
+});

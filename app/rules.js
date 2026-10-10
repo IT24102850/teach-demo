@@ -661,3 +661,52 @@ export function paymentError(due, amount) {
 
 /** #0012 - the receipt number the parent sees. */
 export const receiptNo = (n) => `#${String(Number(n) || 0).padStart(4, '0')}`;
+
+/* ===========================================================================
+   Dragging a class to a new slot (point 9, phase 2).
+   =========================================================================== */
+
+/** Dropped times land on a quarter hour, so a drag cannot make 4:07 PM. */
+export const SNAP_MINUTES = 15;
+export const snapMinutes = (minutes) =>
+  Math.max(0, Math.min(24 * 60 - 1, Math.round(minutes / SNAP_MINUTES) * SNAP_MINUTES));
+
+/**
+ * What a drag would change, as a draft `findClash` can read.
+ *
+ * `scope` is the same question point 9 asks when editing: moving one Wednesday
+ * ("day") makes a one-off on the new date, while moving the class ("all")
+ * swaps that weekday for the new one and leaves the rest alone.
+ */
+export function movedDraft(cls, { fromDate, toDate, startTime, scope }) {
+  const base = {
+    id: cls.id,
+    kind: classKind(cls),
+    student_ids: cls.student_ids || [],
+    venue_type: cls.venue_type || 'area',
+    venue_name: cls.venue_name,
+    area: cls.area || cls.place || '',
+    start_time: startTime,
+    duration_hours: Number(cls.duration_hours) || 1,
+    start_date: cls.start_date,
+  };
+
+  if (scope === 'day' || cls.once_date) {
+    // A single moved session is a one-off on the day it was dropped.
+    return { ...base, id: scope === 'day' ? null : cls.id, days: [], once_date: toDate };
+  }
+
+  // The whole class: the weekday it was dragged off is replaced by the new one.
+  const was = weekday(fromDate);
+  const now = weekday(toDate);
+  const days = [...new Set((cls.days || []).map((d) => (d === was ? now : d)))].sort((a, b) => a - b);
+  return { ...base, days, once_date: null };
+}
+
+/** Has anything actually changed? A drag that lands where it started is a tap. */
+export const movedAnything = (cls, { fromDate, toDate, startTime }) =>
+  toDate !== fromDate || hhmm(startTime) !== hhmm(cls.start_time);
+
+/** "Thursday 19 Mar · 5:00 PM", the line the parent reads. */
+export const whenLabel = (date, time, lang = 'en') =>
+  `${dateTitle(date, lang)} · ${clock12(time)}`;

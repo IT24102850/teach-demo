@@ -396,6 +396,17 @@ const EN = {
   no_past_class: 'A one-time class cannot be in the past',
   travel_warning: 'Less than 30 minutes from {title} in another area.',
   hours_short: '{n} h',
+
+  /* point 9, phase 2 · dragging a class to a new slot */
+  move_class: 'Move class',
+  move_from: 'From',
+  move_to: 'To',
+  hold_to_drag: 'Press and hold a class to move it',
+  tell_parents_wa: 'Tell the parents on WhatsApp ({n})',
+  class_moved: 'Class moved',
+  class_moved_told: 'Class moved · {n} told',
+  no_past_move: 'A class cannot be moved into the past',
+  moving: 'Moving…',
 };
 
 const TA = {
@@ -763,6 +774,16 @@ const TA = {
   no_past_class: 'ஒருமுறை வகுப்பை கடந்த நேரத்தில் வைக்க முடியாது',
   travel_warning: 'வேறு பகுதியில் உள்ள {title} இலிருந்து 30 நிமிடங்களுக்கும் குறைவு.',
   hours_short: '{n} ம',
+
+  move_class: 'வகுப்பை நகர்த்து',
+  move_from: 'இருந்து',
+  move_to: 'வரை',
+  hold_to_drag: 'நகர்த்த வகுப்பை அழுத்திப் பிடிக்கவும்',
+  tell_parents_wa: 'WhatsApp இல் பெற்றோருக்குத் தெரிவி ({n})',
+  class_moved: 'வகுப்பு நகர்த்தப்பட்டது',
+  class_moved_told: 'வகுப்பு நகர்ந்தது · {n} பேருக்குத் தெரிவிக்கப்பட்டது',
+  no_past_move: 'வகுப்பை கடந்த நேரத்திற்கு நகர்த்த முடியாது',
+  moving: 'நகர்த்துகிறது…',
 };
 
 const DICTS = { en: EN, ta: TA };

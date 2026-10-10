@@ -293,3 +293,43 @@ export function paymentOutcome(due, amount) {
 }
 
 export const receiptNo = (n) => `#${String(Number(n) || 0).padStart(4, '0')}`;
+
+/* ===========================================================================
+   Dragging a class to a new slot (point 9, phase 2).
+   =========================================================================== */
+
+export const SNAP_MINUTES = 15;
+export const snapMinutes = (minutes) =>
+  Math.max(0, Math.min(24 * 60 - 1, Math.round(minutes / SNAP_MINUTES) * SNAP_MINUTES));
+
+/** "4:00 PM" - the clock the messages use. */
+export function clock12(time) {
+  const total = minutesOf(time);
+  const h24 = Math.floor(total / 60) % 24;
+  const h = h24 % 12 || 12;
+  return `${h}:${String(total % 60).padStart(2, '0')} ${h24 < 12 ? 'AM' : 'PM'}`;
+}
+
+/** The same move the browser previewed, recomputed here before it is trusted. */
+export function movedDraft(cls, { fromDate, toDate, startTime, scope }) {
+  const base = {
+    id: cls.id,
+    kind: classKind(cls),
+    student_ids: cls.student_ids || [],
+    venue_type: cls.venue_type || 'area',
+    venue_name: cls.venue_name,
+    area: cls.area || cls.place || '',
+    start_time: startTime,
+    duration_hours: Number(cls.duration_hours) || 1,
+    start_date: cls.start_date,
+  };
+
+  if (scope === 'day' || cls.once_date) {
+    return { ...base, id: scope === 'day' ? null : cls.id, days: [], once_date: toDate };
+  }
+
+  const was = weekday(fromDate);
+  const now = weekday(toDate);
+  const days = [...new Set((cls.days || []).map((d) => (d === was ? now : d)))].sort((a, b) => a - b);
+  return { ...base, days, once_date: null };
+}

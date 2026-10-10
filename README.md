@@ -59,8 +59,9 @@ Browser (PWA)  ──►  /api/* on Vercel  ──►  Supabase PostgreSQL + Sto
 under it, Day and Week on an hour grid with a now-line, side-by-side
 overlapping classes, a tappable empty slot and a "+" button · recurring and
 one-off classes, individual or group, at an institute or your own place ·
-a time-slot picker with a clash check · edit one day or all days · cancel a
-single day · Start class / End class with a live timer, real clock times and
+a time-slot picker with a clash check · edit one day or all days · press and
+hold a class to drag it to another time or day, which asks before it tells the
+parents · cancel a single day · Start class / End class with a live timer, real clock times and
 an absent message to each parent · fee ledger with FIFO allocation, days late,
 part payments, cash / bank transfer / online, receipts, Undo, bank-slip
 confirmation · marks and progress reports · income dashboard by day/week/month
@@ -452,6 +453,39 @@ Sri Lanka's Personal Data Protection Act before going live.
 
 ---
 
+### Moving a class by dragging it
+
+Press and hold a class on the Day or Week grid, then drag it. The hold matters:
+the calendar scrolls, and a finger that starts moving straight away is almost
+always trying to scroll rather than to reschedule a lesson. Dropped times land
+on the quarter hour, and a class that has already been taught cannot be dragged
+at all.
+
+The drop saves nothing. It opens a sheet that shows where the class came from
+and where it is going, names anything it would now clash with, and asks two
+questions:
+
+* **This day only**, or **All days**. One session becomes a one-off on the new
+  date and the repeating class is cancelled for the day it left, so nobody is
+  booked twice. The whole class instead swaps that weekday for the new one and
+  leaves its other days alone.
+* **Tell the parents on WhatsApp.** On by default, and it says how many people
+  that is. A drag to tidy up next month's timetable is not always news, so it
+  can be turned off.
+
+Only then does anything move, and the move and the messages go out in the same
+request — a class can never be rescheduled with the message quietly lost. The
+wording is in Appendix B as `moved`, and names the class, the old slot and the
+new one. Without the WhatsApp Cloud API configured the server hands back
+`wa.me` links and the teacher sends them from their own WhatsApp, one tap each,
+exactly as the absent messages work.
+
+What the browser sends is only *where it was dropped*. What that means — which
+days change, what clashes, whether it is even allowed — is worked out again on
+the server before anything is written.
+
+---
+
 ## 8. WhatsApp
 
 **Without any configuration** the app still works end to end: the server builds
@@ -503,7 +537,7 @@ There are three suites. The first needs nothing; the other two drive the real
 database and a running deployment.
 
 ```bash
-npm test          # 291 tests · no database, no network
+npm test          # 321 tests · no database, no network
 npm run check:db  # the SQL rules, against your real database
 npm run check:live # the whole API and everything the browser loads
 ```
@@ -530,7 +564,7 @@ check says so instead of reporting sixty misleading failures; turn it off under
 
 ### What `npm test` covers
 
-291 tests, no database and no network. They cover the checklist in section 11
+321 tests, no database and no network. They cover the checklist in section 11
 of the build guide, plus the handlers, every screen, and the improvement plan
 point by point:
 
@@ -763,6 +797,11 @@ They are no longer render-blocking — the page paints in the system font and
 swaps when Manrope arrives, which is the part that was costing a blank screen —
 but the files still come from `fonts.gstatic.com`. Downloading and subsetting
 them is a build step this repository does not have yet.
+
+**Drag-to-resize is still not there.** A class can be press-and-held and
+dragged to another time or another day, which was the half of point 9's phase
+2 that matters. Dragging the bottom edge to change how long a class runs is
+not built; change the length from the class sheet instead.
 
 **Long lists are not virtualised.** Point 1 suggested drawing only the rows on
 screen. With a few dozen students that costs more complexity than it saves, so
