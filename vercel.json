@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     { "source": "/join", "destination": "/join.html" },
-    { "source": "/join/:key", "destination": "/join.html" }
+    { "source": "/join/:key", "destination": "/join.html" },
+    { "source": "/onboard", "destination": "/onboard.html" }
   ],
   "crons": [
     { "path": "/api/cron", "schedule": "0 2 * * *" }

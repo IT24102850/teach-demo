@@ -54,6 +54,9 @@ function fixtures() {
         code_salt: teacherCode.salt,
         own_place_name: 'My home',
         own_place_area: 'Nugegoda',
+        plus_price: 500,
+        plus_share: 0.5,
+        plus_since: '2026-01-05',
       },
     ],
     v_students: [
@@ -119,6 +122,28 @@ function fixtures() {
     class_students: [
       { class_id: CLASS, student_id: KASUN },
       { class_id: CLASS, student_id: AMAYA },
+    ],
+    /* Kasun's family pays for Plus; Amaya's does not. The gate is the
+       difference between them in every family test below. */
+    subscriptions: [
+      {
+        id: 'bbbbbbbb-0000-4000-8000-00000000000b',
+        teacher_id: TID,
+        student_id: KASUN,
+        status: 'active',
+        price: 500,
+        share: 0.5,
+        started_on: '2026-01-05',
+        ended_on: null,
+      },
+    ],
+    teacher_plus_months: [
+      { teacher_id: TID, month: '2026-02', students: 1, teacher_income: 250, gross: 500 },
+      { teacher_id: TID, month: '2026-03', students: 1, teacher_income: 250, gross: 500 },
+    ],
+    teacher_tuition_months: [
+      { teacher_id: TID, month: '2026-02', charged: 20000 },
+      { teacher_id: TID, month: '2026-03', charged: 22000 },
     ],
     sessions: [],
     attendance: [],
@@ -293,6 +318,48 @@ globalThis.fetch = async (url, init = {}) => {
         full: amount >= due,
       });
     }
+    if (fn === 'start_subscription') {
+      if (!DB.students.some((x) => x.id === body.p_student && x.teacher_id === body.p_teacher)) {
+        return json(400, { message: 'student not found for this teacher' });
+      }
+      if (DB.subscriptions.some((x) => x.student_id === body.p_student && x.status === 'active')) {
+        return json(400, { message: 'that student is already on Plus' });
+      }
+      const row = {
+        id: uuid(),
+        teacher_id: body.p_teacher,
+        student_id: body.p_student,
+        status: 'active',
+        price: body.p_price ?? 500,
+        share: 0.5,
+        started_on: '2026-03-18',
+        ended_on: null,
+        note: body.p_note ?? null,
+      };
+      DB.subscriptions.push(row);
+      return json(200, {
+        subscription_id: row.id,
+        price: row.price,
+        share: row.share,
+        students: DB.subscriptions.filter(
+          (x) => x.teacher_id === body.p_teacher && x.status === 'active',
+        ).length,
+      });
+    }
+    if (fn === 'end_subscription') {
+      const row = DB.subscriptions.find(
+        (x) => x.student_id === body.p_student && x.teacher_id === body.p_teacher && x.status === 'active',
+      );
+      if (!row) return json(400, { message: 'that student is not on Plus' });
+      row.status = 'ended';
+      row.ended_on = '2026-03-18';
+      return json(200, {
+        subscription_id: row.id,
+        students: DB.subscriptions.filter(
+          (x) => x.teacher_id === body.p_teacher && x.status === 'active',
+        ).length,
+      });
+    }
     if (fn === 'reverse_payment') {
       const row = DB.payments.find((x) => x.id === body.p_payment);
       if (!row) return json(400, { message: 'payment not found for this teacher' });
@@ -315,6 +382,19 @@ globalThis.fetch = async (url, init = {}) => {
   DB[table] = DB[table] || [];
 
   if (method === 'GET') {
+    // student_plus is a view: one row per student, saying whether a
+    // subscription is active right now.
+    if (table === 'student_plus') {
+      const derived = DB.students.map((st) => ({
+        student_id: st.id,
+        teacher_id: st.teacher_id,
+        on_plus: DB.subscriptions.some((x) => x.student_id === st.id && x.status === 'active'),
+        started_on:
+          DB.subscriptions.find((x) => x.student_id === st.id && x.status === 'active')
+            ?.started_on ?? null,
+      }));
+      return json(200, derived.filter((row) => matches(row, params)));
+    }
     let rows = DB[table].filter((row) => matches(row, params));
     if (params.limit) rows = rows.slice(0, Number(params.limit));
     // PostgREST resolves embedded resources, e.g. class_students(classes(...)).
@@ -631,6 +711,226 @@ test('a teacher cannot touch another teacher’s class', async () => {
     body: { class_id: CLASS, date: '2026-03-18', absent: [] },
   });
   assert.equal(res.statusCode, 404);
+});
+
+/* ===================== Plus subscriptions and the Income tab ============= */
+
+test('a subscription is recorded by hand, and answers with the new count', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.start',
+    cookie,
+    body: { student_id: AMAYA },
+  });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.name, 'Amaya Jayasinghe');
+  assert.equal(res.json.students, 2, 'Kasun was already on Plus');
+  assert.equal(res.json.price, 500, 'the teacher\'s price, unless one was given');
+  assert.ok(DB.subscriptions.some((x) => x.student_id === AMAYA && x.status === 'active'));
+  // The celebration pop-up is driven by this event.
+  assert.ok(DB.events.some((e) => e.type === 'join' && /joined Plus/.test(e.text)));
+});
+
+test('the same student cannot be subscribed twice', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.start',
+    cookie,
+    body: { student_id: KASUN },
+  });
+  assert.equal(res.statusCode, 500);
+  assert.match(res.json.error, /already on Plus/);
+});
+
+test('a subscription can be given its own price', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.start',
+    cookie,
+    body: { student_id: AMAYA, price: 750 },
+  });
+  assert.equal(res.json.price, 750);
+});
+
+test('ending a subscription keeps the row, marked ended', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.end',
+    cookie,
+    body: { student_id: KASUN },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.students, 0);
+  assert.equal(DB.subscriptions.length, 1, 'nothing was deleted');
+  assert.equal(DB.subscriptions[0].status, 'ended');
+  assert.ok(DB.subscriptions[0].ended_on, 'and the month it was paid for still counts');
+});
+
+test('a student who is not on Plus cannot be ended', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.end',
+    cookie,
+    body: { student_id: AMAYA },
+  });
+  assert.equal(res.statusCode, 500);
+  assert.match(res.json.error, /not on Plus/);
+});
+
+test("another teacher's student cannot be subscribed", async () => {
+  const cookie = await signInTeacher();
+  DB.students[1].teacher_id = 'someone-else';
+  DB.v_students[1].teacher_id = 'someone-else';
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.start',
+    cookie,
+    body: { student_id: AMAYA },
+  });
+  assert.equal(res.statusCode, 404);
+});
+
+test('the teacher bootstrap says who is on Plus, and carries both month series', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, { url: '/api/teacher?r=bootstrap', cookie });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  const kasun = res.json.students.find((x) => x.id === KASUN);
+  const amaya = res.json.students.find((x) => x.id === AMAYA);
+  assert.equal(kasun.on_plus, true);
+  assert.equal(amaya.on_plus, false);
+  assert.equal(res.json.plus_months.length, 2, 'the Plus line of the graph');
+  assert.equal(res.json.tuition_months.length, 2, 'and the tuition line');
+});
+
+/* ------------------------------------------- the invite (handoff draft 2) */
+
+test('the invite screen gives the link and the wording in three languages', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    url: `/api/teacher?r=plus_invite&class_id=${CLASS}`,
+    cookie,
+  });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.match(res.json.link, /\/join\?t=nimal$/, 'the same join link the QR code shows');
+  assert.equal(res.json.title, 'Grade 11 Maths small group');
+  assert.deepEqual(
+    res.json.languages.map((l) => l.code),
+    ['en', 'ta', 'si'],
+  );
+  for (const l of res.json.languages) {
+    assert.ok(l.text.includes(res.json.link), `${l.code} carries the link`);
+    assert.doesNotMatch(l.text, /LKR|Rs/, 'no amounts in the promo, as the handoff asks');
+  }
+  assert.match(res.json.languages[0].text, /now uses Plus/);
+});
+
+test('inviting a class messages only the students who are not on Plus', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=message.plus_invite',
+    cookie,
+    body: { class_id: CLASS, lang: 'en' },
+  });
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  // The fixture class holds Kasun (on Plus) and Amaya (not).
+  assert.equal(res.json.invited, 1, 'Kasun is already subscribed and is left alone');
+  assert.equal(res.json.messages[0].name, 'Amaya Jayasinghe');
+  assert.match(res.json.text, /now uses Plus/);
+});
+
+test('inviting a class where everyone is already on Plus is refused', async () => {
+  const cookie = await signInTeacher();
+  await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.start',
+    cookie,
+    body: { student_id: AMAYA },
+  });
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=message.plus_invite',
+    cookie,
+    body: { class_id: CLASS },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /already on Plus/);
+});
+
+/* --------------------------- "there are no free parents in the app" ------ */
+
+test('a subscribed family sees everything, as before', async () => {
+  const cookie = await signInFamily();
+  const res = await call(familyApi, { url: '/api/family?r=bootstrap', cookie });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.ok(!res.json.locked, 'not locked');
+  assert.ok(res.json.child, 'and the child is there');
+});
+
+test('a family that is not subscribed gets the subscribe screen and nothing else', async () => {
+  const cookie = await signInFamily();
+  // The parent stops paying.
+  DB.subscriptions[0].status = 'ended';
+  DB.subscriptions[0].ended_on = '2026-03-01';
+
+  const res = await call(familyApi, { url: '/api/family?r=bootstrap', cookie });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.locked, true);
+  assert.equal(res.json.child.name, 'Kasun Perera', 'it still says whose it is');
+  assert.ok(res.json.price > 0, 'and what Plus costs');
+
+  // None of the things a subscriber would see.
+  for (const key of ['classes', 'marks', 'events', 'payments', 'board', 'sessions']) {
+    assert.equal(res.json[key], undefined, `${key} is not sent to a locked family`);
+  }
+});
+
+test('a family that is not subscribed cannot write either', async () => {
+  const cookie = await signInFamily();
+  DB.subscriptions[0].status = 'ended';
+  DB.subscriptions[0].ended_on = '2026-03-01';
+
+  for (const [action, body] of [
+    ['slip', { image: `data:image/png;base64,${Buffer.from('fake png bytes').toString('base64')}` }],
+    ['reschedule', { note: 'Can we move it?' }],
+  ]) {
+    const res = await call(familyApi, {
+      method: 'POST',
+      url: `/api/family?r=${action}`,
+      cookie,
+      body,
+    });
+    assert.equal(res.statusCode, 402, `${action} is refused`);
+    assert.match(res.json.error, /Plus subscription/);
+  }
+});
+
+test('subscribing again opens the app back up', async () => {
+  const cookie = await signInFamily();
+  DB.subscriptions[0].status = 'ended';
+  DB.subscriptions[0].ended_on = '2026-03-01';
+  assert.equal((await call(familyApi, { url: '/api/family?r=bootstrap', cookie })).json.locked, true);
+
+  const teacherCookie = await signInTeacher();
+  await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=subscription.start',
+    cookie: teacherCookie,
+    body: { student_id: KASUN },
+  });
+
+  const res = await call(familyApi, { url: '/api/family?r=bootstrap', cookie });
+  assert.ok(!res.json.locked, 'the family is back in');
+  assert.ok(res.json.child);
 });
 
 /* ============== point 9 phase 2: a class dragged to another slot ========= */

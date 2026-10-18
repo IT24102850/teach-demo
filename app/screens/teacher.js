@@ -29,6 +29,7 @@ import {
   tiles,
 } from '../ui.js';
 import { ACTIONS as FORM_ACTIONS } from './teacher-forms.js';
+import { income, plusInvite } from './income.js';
 
 /* ----------------------------------------------------------- shared bits -- */
 
@@ -825,6 +826,8 @@ export function studentDetail() {
        }`,
     )}
 
+    ${plusCard(s)}
+
     ${paymentHistory(s.id)}
 
     ${card(
@@ -848,6 +851,28 @@ export function studentDetail() {
       ${button(t('send_report'), { act: 'report.send', arg: s.id })}
     </div>
   `;
+}
+
+/**
+ * Whether this family pays for Plus, and the one tap that changes it.
+ *
+ * A subscription is recorded by hand in this build - there is no payment
+ * screen - so this is where the teacher marks that a parent has paid.
+ */
+function plusCard(student) {
+  const on = Boolean(student.on_plus);
+  return card(
+    `<div class="row sp">
+       <div class="g">${label('PLUS')}
+         <b>${esc(on ? t('on_plus') : t('not_on_plus'))}</b></div>
+       ${
+         on
+           ? button(t('end_plus'), { act: 'plus.end', arg: student.id, cls: 'sm gh' })
+           : button(t('mark_on_plus'), { act: 'plus.start', arg: student.id, cls: 'sm gr' })
+       }
+     </div>`,
+    { cls: on ? 'plus-on' : '' },
+  );
 }
 
 /**
@@ -1079,11 +1104,15 @@ export const TABS = [
   { key: 'classes', label: 'classes', glyph: '▦' },
   { key: 'students', label: 'students', glyph: '☺' },
   { key: 'fees', label: 'fees', glyph: '৳' },
+  // The handoff's fifth tab: the teacher's Plus income, which is a different
+  // thing from the fee ledger next to it.
+  { key: 'income', label: 'income', glyph: '📈' },
 ];
 
-export const VIEWS = { today, classes: calendar, students: studentsView, fees };
+export const VIEWS = { today, classes: calendar, students: studentsView, fees, income };
 
 export const SUBS = {
+  plusinvite: plusInvite,
   dashboard,
   earn,
   allclasses: allClasses,

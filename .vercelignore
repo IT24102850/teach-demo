@@ -5,6 +5,12 @@
 tests
 scripts
 supabase
+
+# Design handoffs. Reference material for the team, and it describes pricing
+# and what the app does not give a parent who has not subscribed - none of
+# which belongs on a public URL. It contains an .html file, which Vercel would
+# otherwise serve.
+Plus_Income_Handoff
 node_modules
 *.log
 *.bak

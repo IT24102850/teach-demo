@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Set up a teacher · Plus</title>
+    <meta name="description" content="Plus team tool: set a teacher up on Plus." />
+    <meta name="theme-color" content="#000000" />
+    <!-- An internal tool that creates teacher accounts. It must never be
+         indexed, and it is useless without the key in the URL. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <link rel="icon" href="/assets/icon-192.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  </head>
+  <body>
+    <div class="phone">
+      <main id="onboard" tabindex="-1"></main>
+    </div>
+    <div id="sheet"></div>
+    <div id="toast" aria-live="polite"></div>
+    <noscript>
+      <p style="padding: 24px; color: #fff">This tool needs JavaScript switched on.</p>
+    </noscript>
+    <script type="module" src="/app/onboard.js"></script>
+  </body>
+</html>

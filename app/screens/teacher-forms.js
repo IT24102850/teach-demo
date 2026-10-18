@@ -24,6 +24,7 @@ import {
   students,
   teacherName,
 } from '../state.js';
+import { celebration } from './income.js';
 import {
   actionButton,
   bubble,
@@ -1652,6 +1653,78 @@ export const ACTIONS = {
     await api.teacherDo('reschedule.resolve', { request_id: id, status });
     await reload(ctx);
     toast(t('saved'));
+  },
+
+  /* ---- Plus subscriptions and the Income tab ---- */
+
+  /**
+   * The teacher marks that a parent has paid for Plus, and the celebration
+   * from the handoff appears straight away - it is the whole point of the
+   * screen, so it is not left to the next reload to discover.
+   */
+  'plus.start': async (id, _el, ctx) => {
+    try {
+      const result = await api.teacherDo('subscription.start', { student_id: id });
+      await reload(ctx);
+      openSheet(celebration(result, R.plusGoal(result.students)), { onClose: () => {} });
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+  },
+  'plus.celebrated': (_a, _el, ctx) => {
+    closeSheet();
+    goTab('income');
+    ctx.render();
+  },
+  'plus.end': async (id, _el, ctx) => {
+    const student = studentById(id);
+    try {
+      await api.teacherDo('subscription.end', { student_id: id });
+      await reload(ctx);
+      toast(t('plus_ended', { name: student?.call_name || student?.name || '' }));
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+  },
+
+  /** The "Invite N students" button: the QR screen for the fullest class. */
+  'plus.invite': async (_a, _el, ctx) => {
+    const summary = R.incomeSummaryPlus(S.data);
+    const fullest = summary.byClass.find((row) => row.off > 0);
+    return ACTIONS['plus.inviteclass'](fullest?.cls?.id, _el, ctx);
+  },
+
+  'plus.inviteclass': async (classId, _el, ctx) => {
+    try {
+      const invite = await api.plusInvite(classId);
+      goSub('plusinvite', { invite, lang: S.lang === 'ta' ? 'ta' : 'en' });
+      ctx.render();
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+  },
+
+  'plus.lang': (code, _el, ctx) => {
+    S.sub.lang = code;
+    ctx.render();
+  },
+
+  /** Send the invite to everyone in the class who is not on Plus yet. */
+  'plus.send': async (code, _el, ctx) => {
+    const invite = S.sub.invite;
+    if (!invite?.class_id) return toast(t('no_students_yet'), 'bad');
+    try {
+      const result = await api.teacherDo('message.plus_invite', {
+        class_id: invite.class_id,
+        lang: code || 'en',
+      });
+      await reload(ctx);
+      const manual = (result.messages || []).filter((m) => m.link);
+      if (manual.length) openWhatsAppQueue(manual);
+      else toast(t('invited_n', { n: result.invited }));
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
   },
 
   /* ---- settings ---- */

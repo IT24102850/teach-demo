@@ -24,9 +24,53 @@ function activeChild(session, requested) {
   return session.children.includes(id) ? id : session.children[0];
 }
 
+/**
+ * The subscriber rule from the Income handoff: "there are no free parents in
+ * the app".
+ *
+ * A family whose subscription is not active sees a single screen asking them
+ * to subscribe, and nothing else - no attendance, no marks, no fees. They
+ * still get the WhatsApp fee reminder, which is the one thing that reaches
+ * them without the app.
+ *
+ * Families who were already using the app keep it: the migration grandfathers
+ * every student who had a family code when subscriptions were turned on, so
+ * nobody was locked out by the deploy.
+ */
+async function subscriptionFor(childId) {
+  return db.selectOne('student_plus', {
+    select: 'student_id,on_plus,started_on',
+    student_id: `eq.${childId}`,
+  });
+}
+
+async function lockedPayload(session, childId) {
+  const [child, teacher] = await Promise.all([
+    db.selectOne('students', { select: 'id,name,call_name', id: `eq.${childId}` }),
+    db.selectOne('teachers', {
+      select: 'id,name,title,lang,theme,join_key,plus_price',
+      id: `eq.${session.tid}`,
+    }),
+  ]);
+  if (!child) return null;
+  return {
+    locked: true,
+    today: R.today(),
+    child: { id: child.id, name: child.name, call_name: child.call_name },
+    teacher: { name: teacher?.name, title: teacher?.title, lang: teacher?.lang },
+    price: Number(teacher?.plus_price || 0),
+    // What the parent is asked to do: speak to the teacher. There is no
+    // payment screen in this build - a subscription is recorded by hand.
+    how: 'ask_teacher',
+  };
+}
+
 async function bootstrap(session, requestedChild) {
   const childId = activeChild(session, requestedChild);
   const today = R.today();
+
+  const plus = await subscriptionFor(childId);
+  if (!plus?.on_plus) return lockedPayload(session, childId);
 
   const [child, teacher, children, enrolments, marks, events, payments, papers] = await Promise.all([
     db.selectOne('v_students', { select: CHILD_FIELDS, id: `eq.${childId}` }),
@@ -159,6 +203,11 @@ export default guard(async (req, res) => {
   if (req.method !== 'POST') return bad(res, 'Use POST', 405);
   const body = await readJson(req);
   const childId = activeChild(session, body.child_id);
+
+  // The gate applies to writing as well as reading: a parent who is not
+  // subscribed cannot send a slip or ask to reschedule either.
+  const plus = await subscriptionFor(childId);
+  if (!plus?.on_plus) return bad(res, 'This needs a Plus subscription', 402);
 
   switch (r) {
     /** Send a photo of a bank transfer slip (rule 7.2.6 from the parent's side). */

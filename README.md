@@ -76,6 +76,17 @@ feed · switch between children on one code · switch to the Student view.
 **Student** — up next · streak, average, present % · 90 % attendance goal ·
 this week's classes · every mark with a chart · practice papers via signed links.
 
+**Income (teacher)** — a fifth tab for the teacher's Plus income, which is a
+different thing from the fee ledger beside it: how fast Plus is growing
+against tuition, students on Plus month by month, the next goal and who is
+left to invite, class by class. A QR code the class scans off the teacher's
+phone, with the same invite as a WhatsApp message in English, Tamil or
+Sinhala. No rupee amounts anywhere on it, by design.
+
+**Plus team** — a six-screen onboarding wizard at `/onboard?k=<key>` that
+creates a teacher, their subjects and their classes in one sitting, and shows
+their login code once at the end.
+
 **Public** — a sign-up form at `/join?t=<key>` that needs no login: four short
 steps with a progress bar, Back and Submit fixed at the bottom, a check page,
 and an optional photo shrunk on the phone before it is sent.
@@ -486,6 +497,96 @@ the server before anything is written.
 
 ---
 
+## 7a. Plus subscriptions
+
+Two different kinds of money live in this app and never mix:
+
+* **Fees** are what a parent pays the teacher for lessons. They are the ledger
+  of section 6 — charges, payments, receipts — and they are the teacher's.
+* **Plus** is a monthly subscription the parent pays for the app itself. The
+  teacher keeps a share of it (`teachers.plus_share`, 50% by default).
+
+A subscription is **recorded by hand**. There is no payment provider in this
+build: the teacher or an admin marks that a parent has paid, exactly the way a
+bank slip is confirmed, and the `subscriptions` row is the record. Swapping in
+real billing later means filling that table from a webhook and changing
+nothing else — the screens read the table, not the provider.
+
+Ending a subscription marks it `ended` and keeps the row, so the month that
+was paid for still counts in `teacher_plus_months`.
+
+### The subscriber rule
+
+The handoff puts it plainly: *there are no free parents in the app.* A family
+whose subscription is not active sees one screen asking them to subscribe —
+no attendance, no marks, no fees — and cannot write either. They still get the
+WhatsApp fee reminder, which is the one thing that reaches them without the
+app, and that reminder carries a line about Plus (handoff draft 1).
+
+**Families already using the app were not locked out by this.** The migration
+grandfathers every student who had a family code at the moment subscriptions
+were switched on, and marks the teacher so a second run cannot re-subscribe a
+family that has since stopped paying. Turning a rule like this on is a
+decision, not a deploy.
+
+### The goal ladder
+
+The handoff asks for a goal of "25% more students". Worked out from the
+current count, that target would move every time somebody joined and the ring
+could never fill, so the rungs are fixed in advance and the teacher climbs
+them: 5, 7, 9, 12, 15, 19, 24, 30, 38 … At 24 students the next rung is 30 —
+"add 6 more" — and at 28 the ring reads 4 of 6 with "just 2 more to go",
+which is exactly what the design draws.
+
+### "N× faster than tuition"
+
+Growth since the teacher joined Plus, both sides, last month against the
+first. It is only claimed when it can be claimed honestly: two months of
+history either side, something to grow from, and tuition that actually grew.
+Plus starts from almost nothing, so the raw ratio runs into the hundreds — a
+true number and a useless one — so the headline is capped at 20×.
+
+### The QR code
+
+Drawn in the app, in `app/qr.js`. The Content-Security-Policy is
+`script-src 'self'`, which rules out a library from a CDN, and an image
+service would mean sending every teacher's join link to a third party. It is
+byte mode at error-correction level M, versions 1–10, output as an SVG.
+
+`tests/qr.test.js` decodes its own output — unmasking, walking the zig-zag,
+de-interleaving the blocks — and checks the finder patterns, timing lines,
+dark module and format bits against the standard. **It has not been held up
+to a real phone camera**, which is the one test worth doing before a class
+relies on it.
+
+---
+
+## 7b. Setting a teacher up
+
+`/onboard?k=<ONBOARD_KEY>` is the six-screen wizard the Plus team fills in
+sitting next to a teacher. It asks who they are, what they teach, their
+classes, and how they run things today; then it creates the teacher, their
+classes and their login code, and offers a welcome message on WhatsApp.
+
+It is English only on purpose. The teacher app is English and Tamil because
+teachers and families use it every day; this is used once, by the team.
+
+**It creates accounts, so it is shut by default.** `ONBOARD_KEY` must be set
+in the environment and presented on every request. Without it — or with the
+wrong one — the endpoint answers 404 and says nothing that a missing key
+would not. Leave `ONBOARD_KEY` unset in any environment where the tool is not
+wanted and the page is simply not there.
+
+The wizard does not ask what time a class starts; that would be a sixth
+screen for something that takes ten seconds in the app. Classes it creates
+are flagged `setup_pending` with a placeholder time, along with the expected
+student count and fee band it did ask for.
+
+The teacher's code is shown **once**, at the end. Like a family code it is
+stored hashed and cannot be read back.
+
+---
+
 ## 8. WhatsApp
 
 **Without any configuration** the app still works end to end: the server builds
@@ -537,7 +638,7 @@ There are three suites. The first needs nothing; the other two drive the real
 database and a running deployment.
 
 ```bash
-npm test          # 321 tests · no database, no network
+npm test          # 377 tests · no database, no network
 npm run check:db  # the SQL rules, against your real database
 npm run check:live # the whole API and everything the browser loads
 ```
@@ -564,7 +665,7 @@ check says so instead of reporting sixty misleading failures; turn it off under
 
 ### What `npm test` covers
 
-321 tests, no database and no network. They cover the checklist in section 11
+377 tests, no database and no network. They cover the checklist in section 11
 of the build guide, plus the handlers, every screen, and the improvement plan
 point by point:
 
@@ -779,6 +880,38 @@ in SQL after uploading to the `papers` bucket, and the Open button works.
 
 **The hour grid starts at the earliest class.** It expands to fit whatever is
 on screen rather than always showing 00:00–24:00.
+
+### From the Income handoff
+
+**The handoff disagrees with itself on screen 2.** Its README calls the
+by-class label "7 parents to subscribe" with a **Remind** button sending
+draft 1 (the fee reminder); the mock-up says "7 not on Plus" with an
+**Invite** button, which is draft 2. Draft 1 is a *fee* reminder, and sending
+it to a parent just because they are not on Plus would be wrong when their
+fees are paid. So: the button is **Invite** and sends draft 2, and draft 1's
+Plus line lives where it belongs — on the fee reminder, for parents who are
+not subscribed. Say the word if the other reading was meant.
+
+**The Sinhala is a first draft.** The app is English and Tamil; the invite
+screen offers a third language because it goes to a parent who does not have
+the app yet. The Sinhala wording for the two outgoing messages has not been
+read by a native speaker and should be before it is used.
+
+**No payment provider.** Subscriptions are recorded by hand, as agreed. The
+Income screens are therefore honest about what is in the table, and nothing
+charges anybody.
+
+**The teacher's referral bonus is not built.** The handoff parks it, and so
+does this.
+
+**The QR code has not been scanned by a phone.** It decodes correctly against
+its own decoder and matches the standard's structure; point a camera at it
+before a classroom does.
+
+**The onboarding wizard's key is a shared secret, not an account.** That is
+the right weight for a small team tool, but it means anyone with the link can
+create teachers. Rotate `ONBOARD_KEY` if it leaks, and unset it when the team
+is not onboarding.
 
 ### From the improvement plan
 

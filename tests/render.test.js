@@ -31,6 +31,7 @@ Object.defineProperty(globalThis, 'navigator', {
 
 const { S } = await import('../app/state.js');
 const teacher = await import('../app/screens/teacher.js');
+const incomeTab = await import('../app/screens/income.js');
 const family = await import('../app/screens/family.js');
 const login = await import('../app/screens/login.js');
 const { setLang } = await import('../app/i18n.js');
@@ -54,6 +55,7 @@ const student = (over) => ({
   parent_name: 'Sunil Perera',
   parent_phone: '94770000001',
   status: 'active',
+  on_plus: true,
   slip_sent_at: null,
   last_reminded_at: null,
   amount_due: 6000,
@@ -89,6 +91,7 @@ const STUDENTS = [
   }),
   student({
     id: 's3',
+    on_plus: false,
     name: 'Ravi Fernando',
     area: 'Dehiwala',
     fee_per_class: 800,
@@ -100,6 +103,7 @@ const STUDENTS = [
   }),
   student({
     id: 's4',
+    on_plus: false,
     name: 'Ishara Madushani',
     status: 'pending',
     fee_per_class: 0,
@@ -193,7 +197,27 @@ const TEACHER_DATA = {
     join_key: 'nimal',
     own_place_name: 'My home',
     own_place_area: 'Nugegoda',
+    plus_price: 500,
+    plus_share: 0.5,
+    plus_since: '2025-10-01',
   },
+  /* Six months of Plus against six months of tuition, for the graph. */
+  plus_months: [
+    { month: '2025-10', students: 4, teacher_income: 1000, gross: 2000 },
+    { month: '2025-11', students: 7, teacher_income: 1750, gross: 3500 },
+    { month: '2025-12', students: 11, teacher_income: 2750, gross: 5500 },
+    { month: '2026-01', students: 15, teacher_income: 3750, gross: 7500 },
+    { month: '2026-02', students: 18, teacher_income: 4500, gross: 9000 },
+    { month: '2026-03', students: 24, teacher_income: 6000, gross: 12000 },
+  ],
+  tuition_months: [
+    { month: '2025-10', charged: 100000 },
+    { month: '2025-11', charged: 102000 },
+    { month: '2025-12', charged: 104000 },
+    { month: '2026-01', charged: 106000 },
+    { month: '2026-02', charged: 108000 },
+    { month: '2026-03', charged: 110000 },
+  ],
   students: STUDENTS,
   classes: CLASSES,
   sessions: [
@@ -350,7 +374,21 @@ test('the day timeline places a class by time and sizes it by duration', () => {
   const html = teacher.calendar();
   assert.match(html, /class="blk/, 'a block is drawn');
   assert.match(html, /16:00/);
-  assert.match(html, /class="now"/, 'the now-line is drawn on today');
+
+  /*
+   * The red "now" line is drawn only while the clock is inside the hours the
+   * grid shows - this day runs 06:00 to 21:00, so at midnight there is
+   * nothing to point at. Asserting it unconditionally made this test pass or
+   * fail depending on the time of day it was run.
+   */
+  const now = new Date();
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  const onScreen = minutes >= 6 * 60 && minutes <= 21 * 60;
+  assert.equal(
+    /class="now"/.test(html),
+    onScreen,
+    `the now-line should ${onScreen ? '' : 'not '}be drawn at ${now.getHours()}:${now.getMinutes()}`,
+  );
 });
 
 test('a cancelled day shows no class', () => {
@@ -495,6 +533,134 @@ test('Attendance can be opened for a class that was never marked', () => {
   asTeacher({ sub: { view: 'attendance', key: 'c1|2026-03-09', absent: [] } });
   const html = check('attendance past', teacher.attendance());
   assert.match(html, /Grade 11 Maths/);
+});
+
+/* ===================== the Income tab (design handoff, screens 1-4) ====== */
+
+test('Income shows growth, students by month and the next goal', () => {
+  asTeacher();
+  const html = check('income', incomeTab.income());
+
+  assert.match(html, /Income/);
+  assert.match(html, /Since you joined Plus/);
+  assert.match(html, /Plus is growing/);
+  assert.match(html, /faster than tuition/);
+  assert.match(html, /STUDENTS ON PLUS/);
+  assert.match(html, /More students every month/);
+  assert.match(html, /NEXT GOAL/);
+  assert.match(html, /Add \d+ more students/);
+  assert.match(html, /Invite \d+ students/);
+});
+
+test('the handoff rule: no money on the Income screens', () => {
+  asTeacher();
+  const html = incomeTab.income();
+  assert.doesNotMatch(html, /LKR/, 'the handoff asks for no rupee amounts here');
+  assert.doesNotMatch(html, /\bRs\b/);
+});
+
+test('the graph draws one point per month and marks the current one', () => {
+  asTeacher();
+  const html = incomeTab.income();
+  // Six months of fixtures, newest highlighted.
+  assert.equal((html.match(/<span[^>]*>(JAN|FEB|MAR|OCT|NOV|DEC)<\/span>/g) || []).length, 6);
+  assert.match(html, /<span class="on">MAR<\/span>/);
+  assert.match(html, /<polyline[^>]*stroke="var\(--teal\)"/, 'the Plus line');
+  assert.match(html, /<polyline[^>]*stroke="var\(--mu\)"/, 'and the tuition line');
+});
+
+test('the months column glows for the month in progress', () => {
+  asTeacher();
+  const html = incomeTab.income();
+  assert.equal((html.match(/class="faces-stack/g) || []).length, 6);
+  assert.equal((html.match(/class="faces-stack on"/g) || []).length, 1, 'only the latest');
+});
+
+test('by class lists who is left to invite, fullest first', () => {
+  asTeacher();
+  const html = incomeTab.income();
+  assert.match(html, /BY CLASS · WHERE TO INVITE/);
+  assert.match(html, /not on Plus/);
+  assert.match(html, /data-a="plus\.inviteclass"/);
+
+  // c1 holds s1 (on Plus) and s2; c2 holds s3; c3 holds s1.
+  const order = [...html.matchAll(/<b class="g">([^<]+)<\/b>/g)].map((m) => m[1]);
+  assert.ok(order.length >= 2, 'the classes are listed');
+});
+
+test('a class where everyone subscribes offers no Invite button', () => {
+  asTeacher();
+  // s1 is the only student of c3, and is on Plus.
+  const html = incomeTab.income();
+  assert.match(html, /All on Plus/);
+});
+
+test('"almost there" appears only when the goal is one or two away', () => {
+  asTeacher();
+  // 2 of the 4 fixture students are on Plus: goal 5, three to go.
+  assert.doesNotMatch(incomeTab.income(), /ALMOST THERE/);
+
+  const many = STUDENTS.map((x) => ({ ...x, on_plus: true }));
+  asTeacher({ data: { ...TEACHER_DATA, students: many } });
+  const html = incomeTab.income();
+  assert.match(html, /ALMOST THERE/, '4 on Plus, one short of the first goal of 5');
+  assert.match(html, /Just 1 more students|Just 1 more/);
+});
+
+test('the invite screen draws a scannable code and three languages', () => {
+  asTeacher({
+    sub: {
+      view: 'plusinvite',
+      lang: 'en',
+      invite: {
+        link: 'https://plus.lk/j/nimal',
+        class_id: 'c1',
+        title: 'Grade 11 Maths small group',
+        languages: [
+          { code: 'en', label: 'English', text: 'Hi! Nimal Sir\'s class now uses Plus.' },
+          { code: 'ta', label: 'தமிழ்', text: 'வணக்கம்!' },
+          { code: 'si', label: 'සිංහල', text: 'ආයුබෝවන්!' },
+        ],
+      },
+    },
+  });
+  const html = check('plus invite', incomeTab.plusInvite());
+
+  assert.match(html, /Invite students/);
+  assert.match(html, /Show this on your phone in class/);
+  assert.match(html, /No printing/);
+  assert.match(html, /<svg[^>]*viewBox="0 0 \d+ \d+"/, 'the QR code is drawn inline');
+  assert.match(html, /data-a="plus\.lang" data-i="en"/);
+  assert.match(html, /data-a="plus\.lang" data-i="ta"/);
+  assert.match(html, /data-a="plus\.lang" data-i="si"/);
+  assert.match(html, /now uses Plus/, 'the chosen wording is shown');
+  assert.match(html, /data-a="plus\.send"/);
+});
+
+test('the celebration names the student and the progress, not the money', () => {
+  asTeacher();
+  const html = check(
+    'celebration',
+    incomeTab.celebration({ name: 'Kasun', students: 25 }, { need: 6, joined: 1, remaining: 5, uplift: 25 }),
+  );
+  assert.match(html, /Kasun joined Plus!/);
+  assert.match(html, /That&#39;s 25 students on Plus/, 'the apostrophe is escaped, not executed');
+  assert.match(html, /Your Plus income just went up/);
+  assert.match(html, /5 more to your next \+25%/);
+  assert.match(html, /Keep going/);
+  assert.doesNotMatch(html, /LKR/, 'no amount on the celebration either');
+});
+
+test('the student screen says whether the family is on Plus', () => {
+  asTeacher({ sub: { view: 'student', id: 's1' } });
+  const on = teacher.studentDetail();
+  assert.match(on, />On Plus</);
+  assert.match(on, /data-a="plus\.end"/);
+
+  asTeacher({ sub: { view: 'student', id: 's3' } });
+  const off = teacher.studentDetail();
+  assert.match(off, />Not on Plus</);
+  assert.match(off, /data-a="plus\.start"/);
 });
 
 test('the student list searches and puts new sign-ups first', () => {

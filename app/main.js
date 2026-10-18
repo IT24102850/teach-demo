@@ -62,12 +62,14 @@ async function loadRole(role) {
       views: familyModule.PARENT_VIEWS,
       subs: familyModule.SUBS,
       firstTab: 'home',
+      locked: familyModule.locked,
     };
     ROLES.student = {
       tabs: familyModule.STUDENT_TABS,
       views: familyModule.STUDENT_VIEWS,
       subs: familyModule.SUBS,
       firstTab: 'home',
+      locked: familyModule.locked,
     };
   }
   return ROLES[role] || null;
@@ -106,6 +108,13 @@ function screenHtml() {
   const role = ROLES[S.role];
   // The role's code is still arriving: the skeleton covers that too.
   if (!role || !S.data) return skeleton();
+
+  /*
+   * The family's Plus subscription is not active. The server sends a payload
+   * with nothing in it but who this is and what Plus costs, so there is
+   * nothing here to draw a timetable from - and nothing to leak either.
+   */
+  if (S.data.locked && role.locked) return role.locked();
   if (S.sub) {
     const sub = role.subs[S.sub.view];
     if (sub) return sub();
@@ -116,6 +125,7 @@ function screenHtml() {
 
 function navHtml() {
   if (!S.role || S.sub || S.loading || !S.data) return '';
+  if (S.data.locked) return ''; // nothing to navigate to
   const role = ROLES[S.role];
   return role.tabs
     .map(

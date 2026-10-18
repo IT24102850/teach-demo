@@ -12,7 +12,7 @@ import { bad, guard, json, ok, query, readJson, resource } from './_lib/http.js'
 import { codeLookup, hashCode, randomCode } from './_lib/session.js';
 import { teacherSession } from './_lib/session.js';
 import * as R from './_lib/rules.js';
-import { FEED, render } from './_lib/templates.js';
+import { FEED, INVITE_LANGS, render } from './_lib/templates.js';
 import { sendWhatsApp, waLink } from './_lib/whatsapp.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -84,6 +84,9 @@ async function bootstrap(req, tid) {
     reschedules,
     marks,
     payments,
+    subscriptions,
+    plusMonths,
+    tuitionMonths,
   ] = await Promise.all([
       db.selectOne('teachers', { id: `eq.${tid}` }),
       db.select('v_students', {
@@ -122,6 +125,14 @@ async function bootstrap(req, tid) {
         order: 'created_at.desc',
         limit: 60,
       }),
+      // The Income tab: who is on Plus, and the two lines of its graph.
+      db.select('subscriptions', {
+        select: 'id,student_id,status,price,share,started_on,ended_on',
+        teacher_id: `eq.${tid}`,
+        status: 'eq.active',
+      }),
+      db.select('teacher_plus_months', { teacher_id: `eq.${tid}`, order: 'month.asc' }),
+      db.select('teacher_tuition_months', { teacher_id: `eq.${tid}`, order: 'month.asc' }),
     ]);
 
   if (!teacher) return null;
@@ -136,11 +147,18 @@ async function bootstrap(req, tid) {
     soldByPaper[s.paper_id].revenue += Number(s.price);
   }
 
+  // The subscriber flag rides along on each student, so every screen that
+  // already has a student has it too.
+  const onPlus = new Set(subscriptions.map((x) => x.student_id));
+
   return {
     today,
     window: { from, to },
     teacher,
-    students,
+    students: students.map((x) => ({ ...x, on_plus: onPlus.has(x.id) })),
+    subscriptions,
+    plus_months: plusMonths,
+    tuition_months: tuitionMonths,
     classes,
     sessions,
     events,
@@ -177,6 +195,12 @@ const mustClass = async (tid, id) => {
 };
 
 const teacherName = (t) => `${t.name}${t.title ? ` ${t.title}` : ''}`;
+
+/** The public sign-up link for this teacher, as the QR code and the invite use it. */
+const joinLink = (req, joinKey) => {
+  const base = (process.env.APP_URL || `https://${req.headers.host}`).replace(/\/+$/, '');
+  return `${base}/join?t=${joinKey}`;
+};
 
 /**
  * Point 13: a clash is not an error the teacher has to decode. 409 carries the
@@ -1140,6 +1164,105 @@ async function handlePost(req, res, tid, r) {
       });
     }
 
+    /* ---- Plus subscriptions and the Income tab ---- */
+
+    /**
+     * A parent has paid for Plus. Recorded by hand, the way a bank slip is:
+     * there is no payment provider in this build, so the teacher or an admin
+     * marks it and the row is the record.
+     *
+     * It answers with the new count and the goal, because the screen shows a
+     * celebration the moment it lands.
+     */
+    case 'subscription.start': {
+      const student = await mustStudent(tid, body.student_id, 'id,name,call_name,parent_phone');
+      const price = body.price === undefined || body.price === null || body.price === ''
+        ? null
+        : Number(body.price);
+      if (price !== null && !(price >= 0)) return bad(res, 'Enter an amount');
+
+      const result = await db.rpc('start_subscription', {
+        p_teacher: tid,
+        p_student: student.id,
+        p_price: price,
+        p_note: body.note || null,
+      });
+
+      await db.insert(
+        'events',
+        {
+          teacher_id: tid,
+          student_id: student.id,
+          type: 'join',
+          text: `${student.call_name || student.name} joined Plus`,
+        },
+        { returning: 'minimal' },
+      );
+
+      return ok(res, {
+        subscription_id: result.subscription_id,
+        student_id: student.id,
+        name: student.call_name || student.name,
+        students: Number(result.students),
+        price: Number(result.price),
+      });
+    }
+
+    /** A parent stopped paying. The row is ended, never deleted. */
+    case 'subscription.end': {
+      const student = await mustStudent(tid, body.student_id, 'id,name');
+      const result = await db.rpc('end_subscription', {
+        p_teacher: tid,
+        p_student: student.id,
+      });
+      return ok(res, { ended: true, students: Number(result.students) });
+    }
+
+    /**
+     * The invite from the Income tab: handoff draft 2, to everyone in one
+     * class who is not on Plus yet. Nobody already subscribed is messaged.
+     */
+    case 'message.plus_invite': {
+      const cls = await mustClass(tid, body.class_id);
+      const chosen = INVITE_LANGS.some((l) => l.code === body.lang) ? body.lang : lang;
+
+      const subscribed = await db.select('subscriptions', {
+        select: 'student_id',
+        teacher_id: `eq.${tid}`,
+        status: 'eq.active',
+      });
+      const onPlus = new Set(subscribed.map((x) => x.student_id));
+      const targets = cls.student_ids.filter((id) => !onPlus.has(id));
+      if (!targets.length) return bad(res, 'Everyone in this class is already on Plus');
+
+      const kids = await db.select('students', {
+        select: 'id,name,call_name,parent_phone',
+        id: db.inList(targets),
+      });
+      const link = joinLink(req, teacher.join_key);
+      const text = render('plusInvite', { teacher: tname, class: cls.title, link }, chosen);
+
+      const sent = [];
+      for (const student of kids) {
+        const result = await notifyParent({
+          tid,
+          student,
+          type: 'join',
+          text,
+          feedText: `Invited to Plus for ${cls.title}`,
+          lang: chosen,
+        });
+        sent.push({
+          student_id: student.id,
+          name: student.name,
+          text,
+          status: result.status,
+          link: result.link,
+        });
+      }
+      return ok(res, { invited: sent.length, text, link, messages: sent });
+    }
+
     /* ---- marks ---- */
     case 'mark.add': {
       const student = await mustStudent(tid, body.student_id, 'id,name,parent_phone');
@@ -1366,10 +1489,31 @@ export default guard(async (req, res) => {
       }
       case 'invite': {
         const teacher = await db.selectOne('teachers', { select: 'name,title,join_key', id: `eq.${tid}` });
-        const base = (process.env.APP_URL || `https://${req.headers.host}`).replace(/\/+$/, '');
-        const link = `${base}/join?t=${teacher.join_key}`;
+        const link = joinLink(req, teacher.join_key);
         const text = render('invite', { teacher: teacherName(teacher), link }, 'en');
         return ok(res, { link, text, whatsapp: waLink('', text) });
+      }
+
+      /**
+       * The Invite screen of the Income tab: the link behind the QR code, and
+       * the draft-2 wording in each language it offers.
+       */
+      case 'plus_invite': {
+        const { class_id: classId } = query(req);
+        const teacher = await db.selectOne('teachers', { select: 'name,title,join_key', id: `eq.${tid}` });
+        const cls = classId ? await mustClass(tid, classId) : null;
+        const link = joinLink(req, teacher.join_key);
+        const title = cls?.title || 'classes';
+
+        return ok(res, {
+          link,
+          class_id: cls?.id || null,
+          title,
+          languages: INVITE_LANGS.map((l) => ({
+            ...l,
+            text: render('plusInvite', { teacher: teacherName(teacher), class: title, link }, l.code),
+          })),
+        });
       }
       default:
         return bad(res, `Unknown request: ${r}`, 404);

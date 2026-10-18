@@ -629,6 +629,29 @@ function shrinkImage(file, maxSide = 1400, quality = 0.82) {
 
 /* ----------------------------------------------------------- registries -- */
 
+/**
+ * What a family sees when their Plus subscription is not active.
+ *
+ * The handoff's rule is "there are no free parents in the app". Rather than
+ * an error, this says plainly whose account it is, what Plus costs and who
+ * to ask - and that the fee reminders carry on regardless, so nobody thinks
+ * they have lost touch with the teacher.
+ */
+export function locked() {
+  const data = S.data || {};
+  const teacher = `${data.teacher?.name || ''}${data.teacher?.title ? ` ${data.teacher.title}` : ''}`;
+  return `
+    <div class="locked">
+      <div class="locked-mark" aria-hidden="true">PLUS</div>
+      <h1>${esc(t('plus_locked_title'))}</h1>
+      ${data.price ? `<p class="locked-price">${esc(t('plus_price_month', { amount: R.money(data.price).replace('LKR ', '') }))}</p>` : ''}
+      <p class="mu">${esc(t('plus_locked_blurb', { teacher }))}</p>
+      <p class="mu">${esc(t('plus_locked_meanwhile'))}</p>
+      ${button(t('log_out'), { act: 'auth.logout', cls: 'o wide' })}
+    </div>
+  `;
+}
+
 export const PARENT_TABS = [
   { key: 'home', label: 'home', glyph: '⌂' },
   { key: 'board', label: 'board', glyph: '🏆' },

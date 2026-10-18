@@ -23,7 +23,9 @@ const SCREEN_FILES = [
   'app/screens/teacher.js',
   'app/screens/teacher-forms.js',
   'app/screens/family.js',
+  'app/screens/income.js',
   'app/join.js',
+  'app/onboard.js',
   'app/fonts.js',
 ];
 
@@ -92,7 +94,7 @@ test('every t() key exists in English', () => {
   const used = new Set([...allSource.matchAll(/\bt\('([\w]+)'/g)].map((m) => m[1]));
   // Tab labels and status keys are looked up from variables, so add them here.
   for (const extra of ['today', 'classes', 'students', 'fees', 'home', 'board', 'marks', 'papers',
-    'done', 'not_marked', 'reminded', 'not_sent', 'individual', 'small_group', 'group',
+    'done', 'not_marked', 'reminded', 'not_sent', 'individual', 'small_group', 'group', 'income',
     'day', 'week', 'month', 'absent', 'fee', 'paid', 'mark', 'report', 'class', 'slip', 'join']) {
     used.add(extra);
   }

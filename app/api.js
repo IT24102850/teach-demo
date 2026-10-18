@@ -57,6 +57,8 @@ export const api = {
   teacherBootstrap: () => get('teacher?r=bootstrap'),
   teacherSessions: (from, to) => get(`teacher?r=sessions&from=${from}&to=${to}`),
   teacherInvite: () => get('teacher?r=invite'),
+  plusInvite: (classId) =>
+    get(`teacher?r=plus_invite${classId ? `&class_id=${encodeURIComponent(classId)}` : ''}`),
   teacherPreview: (kind, studentId) => get(`teacher?r=preview&kind=${kind}&student_id=${studentId}`),
   slipUrl: (studentId) => get(`teacher?r=slip&student_id=${studentId}`),
   teacherDo: (action, body) => post(`teacher?r=${action}`, body || {}),
@@ -64,6 +66,10 @@ export const api = {
   /* family */
   familyBootstrap: (childId) => get(`family?r=bootstrap${childId ? `&child_id=${childId}` : ''}`),
   familyDo: (action, body) => post(`family?r=${action}`, body || {}),
+
+  /* the Plus team's onboarding wizard (gated by ONBOARD_KEY) */
+  onboardConfig: (key) => get(`onboard?r=config&k=${encodeURIComponent(key)}`),
+  onboardSubmit: (body) => post('onboard?r=submit', body),
 
   /* public */
   joinConfig: (key) => get(`join?r=config&t=${encodeURIComponent(key)}`),

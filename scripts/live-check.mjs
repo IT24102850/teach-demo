@@ -162,6 +162,21 @@ async function setup() {
     { returning: 'minimal' },
   );
 
+  // The subscriber rule is live, so the scratch family has to be on Plus or
+  // every family check below would only prove that the gate works. The gate
+  // itself gets its own section further down.
+  await db.insert(
+    'subscriptions',
+    [STU_A, STU_B, STU_C].map((id) => ({
+      teacher_id: TID,
+      student_id: id,
+      price: 500,
+      share: 0.5,
+      note: 'live check',
+    })),
+    { returning: 'minimal' },
+  );
+
   const [paper] = await db.insert('papers', {
     teacher_id: TID, name: 'Live paper', price: 1000, cost: 400,
   });
@@ -537,7 +552,7 @@ async function checkBackend() {
   equal('and restores the exact balance', undone.json.balance, 3000);
   ok(
     'the reversed receipt is still on the record',
-    (await teacher.fetch('/api/teacher?r=bootstrap')).json.payments.some(
+    ((await teacher.fetch('/api/teacher?r=bootstrap')).json.payments || []).some(
       (x) => x.id === part.json.payment_id && x.reversed_at,
     ),
   );
@@ -633,6 +648,69 @@ async function checkBackend() {
     (await teacher.fetch('/api/teacher?r=class.create', { method: 'POST', body: { kind: 'group', venue_type: 'institute', subject: 'Maths', area: 'Kotte', student_ids: [STU_A, STU_B], days: [1], start_time: '09:00', duration_hours: 1 } })).status,
     400,
   );
+
+  section('Plus subscriptions and the Income tab');
+  const plusBoot = (await teacher.fetch('/api/teacher?r=bootstrap')).json;
+  ok('the bootstrap says who is on Plus', plusBoot.students.every((x) => 'on_plus' in x));
+  ok('and carries the Plus month series', Array.isArray(plusBoot.plus_months));
+  ok('and the tuition one to compare it with', Array.isArray(plusBoot.tuition_months));
+
+  const plusEnded = await teacher.fetch('/api/teacher?r=subscription.end', {
+    method: 'POST',
+    body: { student_id: STU_C },
+  });
+  equal('a subscription can be ended', plusEnded.status, 200);
+  equal('and the count drops', plusEnded.json.students, 2);
+
+  const plusStarted = await teacher.fetch('/api/teacher?r=subscription.start', {
+    method: 'POST',
+    body: { student_id: STU_C },
+  });
+  equal('and started again', plusStarted.status, 200);
+  equal('which puts the count back', plusStarted.json.students, 3);
+  ok('the celebration gets a name to show', Boolean(plusStarted.json.name));
+  equal(
+    'the same student cannot be subscribed twice',
+    (await teacher.fetch('/api/teacher?r=subscription.start', { method: 'POST', body: { student_id: STU_C } })).status,
+    500,
+  );
+
+  const plusInv = await teacher.fetch(`/api/teacher?r=plus_invite&class_id=${CLASS_TODAY}`);
+  equal('the invite screen loads', plusInv.status, 200);
+  ok('with the join link behind the QR code', /\/join\?t=live-/.test(plusInv.json.link || ''));
+  equal('and the wording in three languages', plusInv.json.languages.length, 3);
+  ok(
+    'none of which mentions money',
+    plusInv.json.languages.every((l) => !/LKR|Rs\b/.test(l.text)),
+  );
+
+  equal(
+    'inviting a class where everyone is on Plus is refused',
+    (await teacher.fetch('/api/teacher?r=message.plus_invite', { method: 'POST', body: { class_id: CLASS_TODAY } })).status,
+    400,
+  );
+
+  section('there are no free parents in the app');
+  // STU_A is the child behind the family code, so ending it locks that family.
+  await teacher.fetch('/api/teacher?r=subscription.end', { method: 'POST', body: { student_id: STU_A } });
+
+  const plusLocked = await family.fetch('/api/family?r=bootstrap');
+  equal('a family without Plus gets the subscribe screen', plusLocked.status, 200);
+  equal('marked as locked', plusLocked.json.locked, true);
+  ok('it still says whose account it is', Boolean(plusLocked.json.child?.name));
+  ok('and what Plus costs', Number(plusLocked.json.price) > 0);
+  equal('with no timetable on it', plusLocked.json.classes, undefined);
+  equal('and no marks', plusLocked.json.marks, undefined);
+  equal(
+    'and they cannot send a slip either',
+    (await family.fetch('/api/family?r=slip', { method: 'POST', body: { image: PNG } })).status,
+    402,
+  );
+
+  await teacher.fetch('/api/teacher?r=subscription.start', { method: 'POST', body: { student_id: STU_A } });
+  const plusUnlocked = await family.fetch('/api/family?r=bootstrap');
+  ok('subscribing again opens the app back up', !plusUnlocked.json.locked);
+  ok('and the child is there', Boolean(plusUnlocked.json.child));
 
   section('dragging a class to a new slot (point 9, phase 2)');
   // CLASS_LATER runs on one weekday only, three days from now.

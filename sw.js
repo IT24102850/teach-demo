@@ -3,7 +3,7 @@
    when there is no connection. API responses are never cached: fees and
    attendance must always come from the server. */
 
-const SHELL = 'plus-shell-v2';
+const SHELL = 'plus-shell-v3';
 const FILES = [
   '/',
   '/index.html',
@@ -19,10 +19,13 @@ const FILES = [
   '/app/i18n.js',
   '/app/fonts.js',
   '/app/join-steps.js',
+  '/app/onboard-steps.js',
   '/app/screens/login.js',
   '/app/screens/teacher.js',
   '/app/screens/teacher-forms.js',
   '/app/screens/family.js',
+  '/app/screens/income.js',
+  '/app/qr.js',
   '/assets/logo.png',
   '/assets/icon-192.png',
   '/assets/icon-512.png',

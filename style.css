@@ -1688,3 +1688,316 @@ body.busy .phone {
   cursor: grabbing;
   transition: none;
 }
+
+/* ===========================================================================
+   The Income tab (design handoff, screens 1-4).
+
+   Its own look: a teal glow on the growth card, student faces rather than
+   bars, and no money anywhere - the handoff is explicit that these screens
+   show students and growth, never rupees.
+   =========================================================================== */
+
+.plus-mark {
+  font: 400 22px/1 Anton, Manrope, sans-serif;
+  color: var(--teal);
+  letter-spacing: 0.02em;
+}
+
+/* --------------------------------------------- screen 1 · the growth card */
+
+.card.grow-card {
+  background: linear-gradient(160deg, rgba(0, 194, 203, 0.16), var(--card) 70%);
+  border-color: rgba(0, 194, 203, 0.4);
+  box-shadow: 0 0 40px rgba(0, 194, 203, 0.1);
+}
+.grow-h {
+  font-size: 23px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  margin-top: 6px;
+}
+.grow-h.sm {
+  font-size: 19px;
+}
+.grow-n {
+  color: var(--teal);
+}
+.grow {
+  width: 100%;
+  height: 112px;
+  margin-top: var(--s3);
+  overflow: visible;
+}
+.grow-x {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--mu);
+  margin-top: var(--s1);
+}
+.grow-x .on {
+  color: var(--tx);
+}
+
+/* ------------------------------------------ screen 1 · students by month */
+
+.faces {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  height: 150px;
+  margin-top: var(--s2);
+}
+.faces-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.faces-col > b {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--mu);
+  margin-bottom: 6px;
+}
+.faces-col > b.on {
+  color: var(--teal);
+}
+.faces-col em {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--mu);
+  margin-top: 7px;
+}
+.faces-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  padding: 4px;
+  border-radius: 14px;
+}
+/* The month in progress glows, as the handoff draws it. */
+.faces-stack.on {
+  background: rgba(0, 194, 203, 0.15);
+  box-shadow: 0 0 22px rgba(0, 194, 203, 0.35), inset 0 0 0 1.5px var(--teal);
+}
+.faces-stack i {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  margin-top: -2px;
+  display: block;
+}
+
+/* ------------------------------------------------- the goal and the ring */
+
+.card.almost {
+  border-color: rgba(255, 77, 148, 0.5);
+  background: linear-gradient(160deg, rgba(255, 77, 148, 0.14), var(--card) 70%);
+}
+.ring {
+  width: 54px;
+  height: 54px;
+  min-width: 54px;
+}
+.goal-n {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  display: block;
+}
+.goal-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin: var(--s3) 0;
+}
+.goal-dots {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.goal-dots i {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--teal);
+  opacity: 0.6;
+}
+.goal-arrow {
+  color: var(--mu);
+  font-size: 18px;
+}
+.goal-prize {
+  flex: 1;
+  min-width: 0;
+  background: var(--card2);
+  border-radius: 14px;
+  padding: var(--s3);
+  box-shadow: inset 0 0 0 1px rgba(0, 194, 203, 0.35);
+}
+.goal-prize b {
+  display: block;
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--teal);
+  letter-spacing: -0.03em;
+}
+.goal-left {
+  color: var(--pt);
+  font-weight: 800;
+  font-size: 13px;
+}
+
+/* -------------------------------------------------- screen 2 · by class */
+
+.card.byclass .pips {
+  margin: var(--s2) 0;
+}
+.pips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.pips i {
+  height: 7px;
+  flex: 1;
+  min-width: 7px;
+  border-radius: 4px;
+  background: var(--card2);
+}
+.pips i.on {
+  background: var(--teal);
+}
+.pips.wide i {
+  height: 9px;
+}
+.off-n {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--pt);
+  white-space: nowrap;
+}
+.on-n {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--gt);
+  white-space: nowrap;
+}
+.card.plus-on {
+  border-color: rgba(45, 255, 138, 0.35);
+}
+
+/* --------------------------------------------- screen 4 · the QR invite */
+
+.card.qr-card {
+  text-align: center;
+}
+/* The code needs a white quiet zone whatever the theme, or it will not scan. */
+.qr {
+  background: #fff;
+  border-radius: 16px;
+  padding: var(--s3);
+  display: inline-block;
+  line-height: 0;
+  margin-bottom: var(--s3);
+}
+.qr svg {
+  display: block;
+  width: 230px;
+  height: 230px;
+  max-width: 100%;
+}
+.qr-h {
+  display: block;
+  font-size: 16px;
+  margin-bottom: var(--s1);
+}
+
+/* ------------------------------------------- screen 3 · the celebration */
+
+.joined-av {
+  position: relative;
+  width: 86px;
+  height: 86px;
+  border-radius: 50%;
+  background: var(--card2);
+  display: grid;
+  place-items: center;
+}
+.joined-av i {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: block;
+}
+.joined-av span {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--teal);
+  color: var(--ink);
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+  border: 3px solid var(--bg);
+}
+.joined-emoji {
+  font-size: 30px;
+  margin-top: -6px;
+}
+
+/* Confetti. Decorative only, and it stops for anyone who asked it to. */
+.party {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.party i {
+  position: absolute;
+  top: -14px;
+  width: 9px;
+  height: 14px;
+  border-radius: 2px;
+  animation: fall 2.4s linear infinite;
+}
+@keyframes fall {
+  to {
+    transform: translateY(640px) rotate(540deg);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .party {
+    display: none;
+  }
+}
+
+/* ------------------------------------- the family screen when locked out */
+
+.locked {
+  display: grid;
+  place-items: center;
+  gap: var(--s4);
+  text-align: center;
+  padding: var(--s6) var(--s2);
+}
+.locked-mark {
+  font: 400 44px/1 Anton, Manrope, sans-serif;
+  color: var(--teal);
+}
+.locked-price {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--tx);
+}

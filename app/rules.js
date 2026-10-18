@@ -710,3 +710,160 @@ export const movedAnything = (cls, { fromDate, toDate, startTime }) =>
 /** "Thursday 19 Mar · 5:00 PM", the line the parent reads. */
 export const whenLabel = (date, time, lang = 'en') =>
   `${dateTitle(date, lang)} · ${clock12(time)}`;
+
+/* ===========================================================================
+   Plus subscriptions and the Income tab (design handoff, screens 1-4).
+   =========================================================================== */
+
+/**
+ * The goal ladder.
+ *
+ * The handoff says a goal is "the next step of 25% more subscribed students
+ * (e.g. 24 -> 30)". Worked out from the *current* count that target would
+ * move every time somebody joined, so the teacher could never close the gap
+ * and the "4 of 6" ring could never fill. So the rungs are fixed in advance
+ * and the teacher climbs them: each is 25% above the one below, rounded up.
+ *
+ *   5, 7, 9, 12, 15, 19, 24, 30, 38, 48, 60, 75, ...
+ *
+ * At 24 students the next rung is 30 - "add 6 more", exactly as the design
+ * shows - and at 28 the ring reads 4 of 6 with "just 2 more to go".
+ */
+export const GOAL_STEP = 1.25;
+export const FIRST_GOAL = 5;
+
+export function goalLadder(upTo = 10_000) {
+  const rungs = [FIRST_GOAL];
+  while (rungs[rungs.length - 1] < upTo) {
+    const next = Math.ceil(rungs[rungs.length - 1] * GOAL_STEP);
+    rungs.push(next > rungs[rungs.length - 1] ? next : rungs[rungs.length - 1] + 1);
+  }
+  return rungs;
+}
+
+/**
+ * Where the teacher is on the ladder.
+ *
+ * `from` is the rung already reached, `goal` the one being climbed to, and
+ * `joined`/`need` fill the ring. `almost` is the handoff's "1-2 students away".
+ */
+export function plusGoal(students) {
+  const count = Math.max(0, Number(students) || 0);
+  const rungs = goalLadder(count * GOAL_STEP + FIRST_GOAL + 1);
+
+  const goal = rungs.find((rung) => rung > count) ?? count + 1;
+  const reached = [...rungs].reverse().find((rung) => rung <= count) ?? 0;
+
+  const need = goal - reached;
+  const joined = count - reached;
+  const remaining = goal - count;
+
+  return {
+    students: count,
+    goal,
+    from: reached,
+    need, // how many this rung asks for
+    joined, // how many of those have joined
+    remaining, // how many are left
+    pct: need > 0 ? Math.round((joined / need) * 100) : 0,
+    almost: remaining > 0 && remaining <= 2,
+    /** The handoff's headline: a full rung is 25% more students. */
+    uplift: Math.round((goal / Math.max(1, reached || count || 1) - 1) * 100),
+  };
+}
+
+/**
+ * "Plus is growing N× faster than tuition".
+ *
+ * Both sides are growth since the teacher joined Plus - last month against
+ * the first - so a teacher with a big tuition book and a new Plus list is
+ * compared fairly. Returns null when the claim cannot honestly be made:
+ * fewer than two months either side, nothing to grow from, or tuition that
+ * did not grow at all (dividing by that would print a nonsense multiple).
+ */
+export const MAX_MULTIPLE = 20;
+
+export function growthMultiple(plusMonths, tuitionMonths) {
+  const rate = (rows, key) => {
+    const values = (rows || []).map((r) => Number(r[key]) || 0);
+    if (values.length < 2) return null;
+    const first = values.find((v) => v > 0);
+    const last = values[values.length - 1];
+    if (!first || first <= 0) return null;
+    return (last - first) / first;
+  };
+
+  const plus = rate(plusMonths, 'teacher_income');
+  const tuition = rate(tuitionMonths, 'charged');
+  if (plus === null || tuition === null) return null;
+  if (plus <= 0 || tuition <= 0) return null;
+
+  /*
+   * Plus starts from almost nothing, so its growth percentage dwarfs an
+   * established tuition book and the raw ratio runs into the hundreds. A
+   * headline of "300x faster" is true arithmetic and useless to a teacher,
+   * so the claim is capped. Below 2x there is no claim worth making either.
+   */
+  const multiple = Math.min(MAX_MULTIPLE, Math.round(plus / tuition));
+  return multiple >= 2 ? multiple : null;
+}
+
+/** The two lines on the graph, scaled 0-1 so they share one axis. */
+export function growthSeries(plusMonths, tuitionMonths) {
+  const months = (plusMonths || []).map((m) => m.month);
+  const at = (rows, month, key) =>
+    Number((rows || []).find((r) => r.month === month)?.[key] || 0);
+
+  const plus = months.map((m) => at(plusMonths, m, 'teacher_income'));
+  const tuition = months.map((m) => at(tuitionMonths, m, 'charged'));
+  const scale = (values) => {
+    const top = Math.max(...values, 1);
+    return values.map((v) => v / top);
+  };
+  return { months, plus: scale(plus), tuition: scale(tuition), rawPlus: plus, rawTuition: tuition };
+}
+
+/**
+ * Who is left to invite, class by class, fullest first.
+ *
+ * The handoff's README calls this "parents to subscribe" and the screen calls
+ * it "not on Plus". They are the same number; the screen's wording is used,
+ * because the teacher is looking at students, not at parents.
+ */
+export function classesToInvite(classes, students) {
+  const onPlus = new Set(
+    (students || []).filter((s) => s.on_plus).map((s) => s.id),
+  );
+  return (classes || [])
+    .filter((c) => c.active !== false)
+    .map((cls) => {
+      const ids = cls.student_ids || [];
+      const missing = ids.filter((id) => !onPlus.has(id));
+      return {
+        cls,
+        total: ids.length,
+        on: ids.length - missing.length,
+        off: missing.length,
+        missing,
+      };
+    })
+    .filter((row) => row.total > 0)
+    .sort((a, b) => b.off - a.off || String(a.cls.title).localeCompare(String(b.cls.title)));
+}
+
+/** Everything the Income tab needs, worked out in one place. */
+export function incomeSummaryPlus(data) {
+  const students = (data?.students || []).filter((s) => s.status !== 'archived');
+  const on = students.filter((s) => s.on_plus);
+  const plusMonths = data?.plus_months || [];
+  const tuitionMonths = data?.tuition_months || [];
+
+  return {
+    students: on.length,
+    goal: plusGoal(on.length),
+    multiple: growthMultiple(plusMonths, tuitionMonths),
+    series: growthSeries(plusMonths, tuitionMonths),
+    byClass: classesToInvite(data?.classes || [], students),
+    notOnPlus: students.length - on.length,
+  };
+}
