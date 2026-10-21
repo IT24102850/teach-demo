@@ -175,3 +175,38 @@ test('nothing outside /api can reach the service role key', () => {
     assert.ok(!src.includes('_lib/db.js'), `${file} imports the database client`);
   }
 });
+
+/* --------------------------------------------- the service worker strategy */
+
+test('app code is served network first, so a deploy actually reaches people', () => {
+  const sw = read('sw.js');
+
+  /*
+   * This used to be `caches.match(req).then(hit => hit || fetch(req))`:
+   * cache first, network only on a miss. A browser that had opened the app
+   * once kept serving the JS it already had, so new screens never arrived
+   * and teachers saw the old login for as long as the cache name stayed put.
+   * Bumping the name on every deploy is easy to forget and silent when you
+   * do. Network first cannot be forgotten.
+   */
+  assert.match(sw, /async function networkFirst\(/);
+  assert.match(sw, /networkFirst\(event\.request\)/, 'the default path is the network');
+  assert.doesNotMatch(
+    sw,
+    /caches\.match\(event\.request\)\.then\(\s*\(hit\) =>\s*hit \|\|/,
+    'app code must not be served cache-first',
+  );
+
+  // Offline still works: the cache is the fallback, and a navigation with
+  // nothing cached still gets the shell.
+  assert.match(sw, /const hit = await caches\.match\(request\)/);
+  assert.match(sw, /request\.mode === 'navigate'/);
+
+  // Bytes that never change without changing name stay cache-first.
+  assert.match(sw, /const IMMUTABLE = /);
+  assert.match(sw, /cacheFirst\(event\.request\) : networkFirst/);
+
+  // A new worker has to take over at once, not on the next cold start.
+  assert.match(sw, /self\.skipWaiting\(\)/);
+  assert.match(sw, /self\.clients\.claim\(\)/);
+});
