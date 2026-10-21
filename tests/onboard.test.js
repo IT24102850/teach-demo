@@ -349,6 +349,47 @@ test('set-ups from one address are capped', async () => {
   delete process.env.ONBOARD_MAX_PER_HOUR;
 });
 
+/* ============================ the body arrives as a stream, not an object = */
+
+/**
+ * Vercel hands the handler a parsed `req.body`; a plain Node server hands it
+ * a stream that can only be read once. Every test above passes an object, so
+ * a handler that read the body twice looked fine here and failed the moment
+ * it met a real server. This one posts the way a socket does.
+ */
+function streamReq(payload) {
+  const chunks = [Buffer.from(JSON.stringify(payload), 'utf8')];
+  return {
+    method: 'POST',
+    url: '/api/onboard?r=submit',
+    headers: { host: 'plus.test', 'content-type': 'application/json' },
+    socket: { remoteAddress: '203.0.113.9' },
+    // No `body`: the handler has to read the stream, and it drains.
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of chunks) yield chunk;
+    },
+  };
+}
+
+test('a teacher can be created when the body arrives as a stream', async () => {
+  reset();
+  const res = makeRes();
+  await onboardApi(streamReq(goodTeacher()), res);
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.name, 'Nimal Perera');
+  assert.match(res.json.code, /^\d{4}$/);
+  assert.equal(DB.teachers.length, 1);
+});
+
+test('a streamed body with the wrong key is still refused', async () => {
+  reset();
+  const res = makeRes();
+  await onboardApi(streamReq(goodTeacher({ k: 'let-me-in-9999999999' })), res);
+  assert.equal(res.statusCode, 404);
+  assert.equal(DB.teachers.length, 0);
+});
+
 /* ================================================= the wizard's rules === */
 
 const answers = (over = {}) => ({
