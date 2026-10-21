@@ -76,24 +76,29 @@ async function freeCode() {
 
 export default guard(async (req, res) => {
   const r = resource(req);
-  const given = req.method === 'GET' ? query(req).k : (await readJson(req))?.k;
 
   // Off unless a key is configured, and silent about why.
   if (!KEY) return bad(res, 'Not found', 404);
 
   if (req.method === 'GET') {
     if (r !== 'config') return bad(res, 'Not found', 404);
-    if (!keyOk(given)) return bad(res, 'Not found', 404);
+    if (!keyOk(query(req).k)) return bad(res, 'Not found', 404);
     return ok(res, { ready: true, code_length: Number(process.env.CODE_LENGTH || 4) });
   }
 
   if (req.method !== 'POST') return bad(res, 'Use POST', 405);
   if (r !== 'submit') return bad(res, 'Not found', 404);
 
-  // The body was already read above to find the key, so read it again from
-  // the cached value rather than the stream.
-  const body = (req.body && typeof req.body === 'object' ? req.body : null) || (await readJson(req));
-  if (!keyOk(body.k || given)) return bad(res, 'Not found', 404);
+  /*
+   * Read the body exactly once.
+   *
+   * `readJson` drains the request stream, so asking for it twice - once to
+   * find the key, once for the payload - gets an empty object the second
+   * time and every field reads as missing. Vercel hides this by parsing the
+   * body before the handler runs; a plain Node server does not.
+   */
+  const body = await readJson(req);
+  if (!keyOk(body.k)) return bad(res, 'Not found', 404);
 
   const ip = clientIp(req);
   const since = new Date(Date.now() - 3600_000).toISOString();
