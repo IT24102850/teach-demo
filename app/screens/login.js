@@ -13,8 +13,23 @@
 
 import { api } from '../api.js';
 import { t } from '../i18n.js';
+import { lkMobileError } from '../rules.js';
 import { S, savePrefs, applyTheme } from '../state.js';
-import { card, esc, iconButton, muted, toast } from '../ui.js';
+import {
+  actionButton,
+  button,
+  card,
+  chip,
+  esc,
+  field,
+  iconButton,
+  label,
+  muted,
+  telField,
+  telValue,
+  toast,
+  wireTelFields,
+} from '../ui.js';
 
 const L = {
   role: null, // 'teacher' | 'parent' | 'student'
@@ -23,7 +38,21 @@ const L = {
   shake: false,
   wrong: 0, // wrong codes in a row
   lockedUntil: 0, // epoch ms; 0 when not locked out
+
+  /*
+   * How a teacher is signing in. Families only ever use a code - that is the
+   * right trade for a parent on a shared phone. A teacher's account is their
+   * livelihood, so it gets an email and a password.
+   */
+  how: 'password', // 'password' | 'code'
+  mode: 'in', // 'in' = sign in, 'up' = make an account
+  busy: false,
+  error: null,
+  signup: { title: 'Mr', name: '', email: '', phone: '', password: '', area: '', subjects: [] },
 };
+
+const SUBJECTS = ['Maths', 'Science', 'English', 'ICT', 'Commerce', 'Combined Maths'];
+const TITLES = ['Mr', 'Mrs', 'Miss', 'Ms', 'Dr'];
 
 let lockTimer = null;
 
@@ -122,7 +151,122 @@ function lockScreen() {
   `;
 }
 
-export const view = () => (L.role ? lockScreen() : rolePicker());
+/* ------------------------------------------------- the teacher's own way -- */
+
+/** Read the boxes back before any redraw, so nothing typed is lost. */
+function captureSignup() {
+  const read = (id) => document.getElementById(id);
+  const set = (key, id) => {
+    const el = read(id);
+    if (el) L.signup[key] = el.value;
+  };
+  set('name', 'su-name');
+  set('email', 'su-email');
+  set('password', 'su-pass');
+  set('area', 'su-area');
+  const title = read('su-title');
+  if (title) L.signup.title = title.value;
+  const tel = read('su-phone');
+  if (tel) L.signup.phone = tel.value;
+}
+
+function captureSignin() {
+  const email = document.getElementById('si-email');
+  const pass = document.getElementById('si-pass');
+  if (email) L.signup.email = email.value;
+  if (pass) L.signup.password = pass.value;
+}
+
+const topBar = () => `
+  <div class="row sp top-row">
+    ${iconButton('←', { act: 'login.unrole', aria: t('back') })}
+    ${iconButton(S.lang === 'en' ? 'த' : 'EN', { act: 'lang.toggle', aria: t('language') })}
+  </div>`;
+
+/** Sign in with an email and a password. */
+function signInScreen() {
+  return `
+    ${topBar()}
+    <h1 class="center mt">${esc(t('teacher_sign_in'))}</h1>
+    ${L.error ? `<p class="fld-note no center">${esc(L.error)}</p>` : ''}
+
+    ${field('si-email', t('email'), {
+      type: 'email',
+      value: L.signup.email,
+      placeholder: 'you@example.com',
+    })}
+    ${field('si-pass', t('password'), { type: 'password', value: L.signup.password })}
+
+    ${actionButton(t('sign_in'), {
+      act: 'login.password',
+      cls: 'wide',
+      busy: L.busy,
+      busyText: t('checking'),
+    })}
+
+    <p class="mu center mt">${esc(t('no_account'))}
+      <button type="button" class="link-btn" data-a="login.tosignup">${esc(t('create_account'))}</button>
+    </p>
+    <p class="mu center">
+      <button type="button" class="link-btn" data-a="login.tocode">${esc(t('use_code_instead'))}</button>
+    </p>
+  `;
+}
+
+/** Make a teacher account. Everything here is needed to use the app at all. */
+function signUpScreen() {
+  const su = L.signup;
+  return `
+    ${topBar()}
+    <h1 class="center">${esc(t('create_account'))}</h1>
+    <p class="mu center">${esc(t('signup_blurb'))}</p>
+    ${L.error ? `<p class="fld-note no center">${esc(L.error)}</p>` : ''}
+
+    ${label(t('full_name'))}
+    <div class="row gap">
+      <div style="flex:0 0 88px">
+        <label class="fld"><select id="su-title">${TITLES.map(
+          (x) => `<option value="${esc(x)}"${x === su.title ? ' selected' : ''}>${esc(x)}</option>`,
+        ).join('')}</select></label>
+      </div>
+      <div class="g">${field('su-name', '', { value: su.name, placeholder: 'Shehan Asher' })}</div>
+    </div>
+
+    ${field('su-email', t('email'), {
+      type: 'email',
+      value: su.email,
+      required: true,
+      placeholder: 'you@example.com',
+    })}
+    ${telField('su-phone', t('whatsapp_number'), { value: su.phone })}
+    ${field('su-pass', t('password'), { type: 'password', value: su.password })}
+    <p class="fld-hint">${esc(t('password_rule'))}</p>
+
+    ${label(t('subjects_you_teach'))}
+    <div class="chips">${SUBJECTS.map((x) =>
+      chip(x, { act: 'login.subject', arg: x, on: su.subjects.includes(x) }),
+    ).join('')}</div>
+
+    ${field('su-area', t('area'), { value: su.area, placeholder: 'Nugegoda' })}
+
+    ${actionButton(t('create_account'), {
+      act: 'login.signup',
+      cls: 'gr wide',
+      busy: L.busy,
+      busyText: t('checking'),
+    })}
+    <p class="mu center">
+      <button type="button" class="link-btn" data-a="login.tosignin">${esc(t('have_account'))}</button>
+    </p>
+  `;
+}
+
+export const view = () => {
+  if (!L.role) return rolePicker();
+  // Families only ever use a code; teachers choose.
+  if (L.role !== 'teacher' || L.how === 'code') return lockScreen();
+  return L.mode === 'up' ? signUpScreen() : signInScreen();
+};
 
 /* ------------------------------------------------------------- actions --- */
 
@@ -131,7 +275,98 @@ export const ACTIONS = {
     L.role = role;
     L.pin = '';
     L.shake = false;
+    L.error = null;
+    // A teacher lands on email and password; a family lands on the keypad.
+    L.how = role === 'teacher' ? 'password' : 'code';
+    L.mode = 'in';
     render();
+  },
+
+  /* ---- the teacher's email and password ---- */
+  'login.tocode': (_a, _el, { render }) => {
+    L.how = 'code';
+    L.error = null;
+    render();
+  },
+  'login.tosignup': (_a, _el, { render }) => {
+    captureSignin();
+    L.mode = 'up';
+    L.error = null;
+    render();
+  },
+  'login.tosignin': (_a, _el, { render }) => {
+    captureSignup();
+    L.mode = 'in';
+    L.error = null;
+    render();
+  },
+  'login.subject': (name, _el, { render }) => {
+    captureSignup();
+    const at = L.signup.subjects.indexOf(name);
+    if (at >= 0) L.signup.subjects.splice(at, 1);
+    else L.signup.subjects.push(name);
+    render();
+  },
+
+  'login.password': async (_a, _el, ctx) => {
+    captureSignin();
+    const { email, password } = L.signup;
+    if (!email.trim() || !password) {
+      L.error = t('enter_email_password');
+      return ctx.render();
+    }
+    L.busy = true;
+    L.error = null;
+    ctx.render();
+    try {
+      const session = await api.login(null, null, { email: email.trim(), password });
+      L.busy = false;
+      resetLogin();
+      await ctx.onSignedIn(session);
+    } catch (err) {
+      L.busy = false;
+      L.error = err.message;
+      ctx.render();
+    }
+  },
+
+  'login.signup': async (_a, _el, ctx) => {
+    captureSignup();
+    const su = L.signup;
+
+    // Checked here so the person is told which box is wrong, not just that
+    // something is. The server checks all of it again regardless.
+    const phone = telValue('su-phone');
+    if (su.name.trim().length < 2) L.error = t('enter_name');
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(su.email.trim())) L.error = t('enter_email');
+    else if (lkMobileError(su.phone) || !phone) L.error = t('tel_nine');
+    else if (su.password.length < 8) L.error = t('password_rule');
+    else if (!su.subjects.length) L.error = t('pick_subject');
+    else L.error = null;
+
+    if (L.error) return ctx.render();
+
+    L.busy = true;
+    ctx.render();
+    try {
+      const session = await api.signup({
+        title: su.title,
+        name: su.name.trim(),
+        email: su.email.trim(),
+        phone,
+        password: su.password,
+        subjects: su.subjects,
+        area: su.area.trim(),
+        lang: S.lang,
+      });
+      L.busy = false;
+      resetLogin();
+      await ctx.onSignedIn(session);
+    } catch (err) {
+      L.busy = false;
+      L.error = err.message;
+      ctx.render();
+    }
   },
 
   'login.unrole': (_arg, _el, { render }) => {
@@ -242,4 +477,15 @@ export function resetLogin() {
   L.shake = false;
   L.wrong = 0;
   L.lockedUntil = 0;
+  L.how = 'password';
+  L.mode = 'in';
+  L.busy = false;
+  L.error = null;
+  // The password never outlives the attempt that used it.
+  L.signup = { title: 'Mr', name: '', email: '', phone: '', password: '', area: '', subjects: [] };
+}
+
+/** The +94 boxes on the sign-up form need their live formatting. */
+export function afterLogin() {
+  wireTelFields(document.getElementById('scr'));
 }

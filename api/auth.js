@@ -3,7 +3,8 @@
  *
  *   GET  ?r=config   what the login screen needs before anyone types
  *   GET  ?r=me       the current session, so a reload stays logged in
- *   POST ?r=login    { role, code }
+ *   POST ?r=login    { role, code }  or  { email, password }
+ *   POST ?r=signup   a teacher makes their own account
  *   POST ?r=logout
  *
  * The code is checked here, on the server, never in the browser. Failed
@@ -17,12 +18,21 @@ import {
   codeLookup,
   endSession,
   familySession,
+  hashCode,
   readSession,
   secretsReady,
   startSession,
   teacherSession,
   verifyCode,
 } from './_lib/session.js';
+import { toLkMobile } from './_lib/rules.js';
+
+/* A password has to be worth having; 8 characters is the floor. */
+const MIN_PASSWORD = 8;
+const SIGNUPS_PER_HOUR = Number(process.env.SIGNUP_MAX_PER_HOUR || 10);
+
+const cleanEmail = (value) => String(value || '').trim().toLowerCase();
+const looksLikeEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
 
 const MAX_FAILS = Number(process.env.LOGIN_MAX_ATTEMPTS || 8);
 const WINDOW_MINUTES = Number(process.env.LOGIN_WINDOW_MINUTES || 15);
@@ -42,6 +52,138 @@ async function failuresFor(ip) {
 
 const logAttempt = (ip, role, success) =>
   db.insert('login_attempts', { ip, role, ok: success }, { returning: 'minimal' }).catch(() => {});
+
+/**
+ * Sign in as a teacher with an email and a password.
+ *
+ * The same lock-out as the code path, and the same answer whether the email
+ * is unknown or the password is wrong - telling them apart would hand an
+ * attacker a list of who has an account here.
+ */
+async function loginWithPassword(req, res, body, ip) {
+  const email = cleanEmail(body.email);
+  const password = String(body.password || '');
+
+  if (!email || !password) return bad(res, 'Enter your email and password');
+  if ((await failuresFor(ip)) >= MAX_FAILS) {
+    return bad(res, `Too many tries. Please wait ${WINDOW_MINUTES} minutes and try again.`, 429);
+  }
+
+  const teacher = await db.selectOne('teachers', {
+    select: 'id,name,title,email,password_hash,password_salt',
+    email: `eq.${email}`,
+  });
+
+  if (!teacher?.password_hash || !verifyCode(password, teacher.password_hash, teacher.password_salt)) {
+    await logAttempt(ip, 'teacher', false);
+    return bad(res, 'That email and password did not work', 401);
+  }
+
+  await logAttempt(ip, 'teacher', true);
+  const session = { kind: 'teacher', tid: teacher.id };
+  startSession(res, session);
+  return ok(res, (await summaryOf(session)) ?? { role: 'teacher' });
+}
+
+/**
+ * A teacher makes their own account.
+ *
+ * Open on purpose: a teacher who hears about Plus can start using it without
+ * waiting for anybody. What that costs is that anybody can make an account
+ * here, so it is rate limited per address and the sign-up collects enough to
+ * be a real teacher rather than a drive-by row.
+ *
+ * They are signed in straight away - asking somebody to log in again with the
+ * password they just chose is a pointless step.
+ */
+async function signup(req, res) {
+  const ip = clientIp(req);
+  const body = await readJson(req);
+
+  const since = new Date(Date.now() - 3600_000).toISOString();
+  const recent = await db.select('login_attempts', {
+    select: 'id',
+    ip: `eq.${ip}`,
+    role: 'eq.signup',
+    created_at: `gte.${since}`,
+    limit: SIGNUPS_PER_HOUR + 1,
+  });
+  if (recent.length >= SIGNUPS_PER_HOUR) {
+    return bad(res, 'Too many accounts from here. Please try again later.', 429);
+  }
+
+  const name = String(body.name || '').trim();
+  if (name.length < 2) return bad(res, 'Enter your full name');
+
+  const email = cleanEmail(body.email);
+  if (!looksLikeEmail(email)) return bad(res, 'Enter a valid email address');
+
+  const password = String(body.password || '');
+  if (password.length < MIN_PASSWORD) {
+    return bad(res, `Your password needs at least ${MIN_PASSWORD} characters`);
+  }
+
+  const phone = toLkMobile(body.phone);
+  if (!phone) return bad(res, 'Enter a Sri Lankan mobile number: 9 digits starting with 7');
+
+  const subjects = (Array.isArray(body.subjects) ? body.subjects : [])
+    .map((x) => String(x).trim())
+    .filter(Boolean)
+    .slice(0, 20);
+  if (!subjects.length) return bad(res, 'Pick at least one subject');
+
+  const area = String(body.area || '').trim();
+
+  // Checked before inserting so the answer is a sentence rather than a
+  // constraint violation. The unique index is still what guarantees it.
+  const taken = await db.selectOne('teachers', { select: 'id', email: `eq.${email}` });
+  if (taken) return bad(res, 'There is already an account with that email', 409);
+
+  const sameNumber = await db.selectOne('teachers', { select: 'id', phone: `eq.${phone}` });
+  if (sameNumber) return bad(res, 'There is already an account with that number', 409);
+
+  const joinKey = await freeJoinKey(name);
+  const { hash, salt } = hashCode(password);
+
+  const [teacher] = await db.insert('teachers', {
+    name,
+    title: String(body.title || 'Mr').slice(0, 12),
+    email,
+    phone,
+    join_key: joinKey,
+    subjects,
+    lang: body.lang === 'ta' ? 'ta' : 'en',
+    password_hash: hash,
+    password_salt: salt,
+    own_place_area: area || null,
+    plus_since: new Date().toISOString().slice(0, 10),
+  });
+
+  await db.insert('login_attempts', { ip, role: 'signup', ok: true }, { returning: 'minimal' });
+
+  const session = { kind: 'teacher', tid: teacher.id };
+  startSession(res, session);
+  return ok(res, {
+    ...((await summaryOf(session)) ?? { role: 'teacher' }),
+    created: true,
+    join_key: joinKey,
+  });
+}
+
+/** A sign-up link from the teacher's name, made unique if it is taken. */
+async function freeJoinKey(name) {
+  const base =
+    String(name || 'teacher')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '')
+      .slice(0, 14) || 'teacher';
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const candidate = attempt ? `${base}${attempt + 1}` : base;
+    const taken = await db.selectOne('teachers', { select: 'id', join_key: `eq.${candidate}` });
+    if (!taken) return candidate;
+  }
+  throw Object.assign(new Error('Could not make a sign-up link for that name'), { status: 500 });
+}
 
 /**
  * What the app needs to know about itself. It takes the session explicitly,
@@ -82,8 +224,12 @@ async function summaryOf(session) {
 
 async function login(req, res) {
   const ip = clientIp(req);
-  const { role, code } = await readJson(req);
+  const body = await readJson(req);
+  const { role, code } = body;
   const wanted = String(role || '').toLowerCase();
+
+  // A teacher may sign in with an email and a password instead of a code.
+  if (body.email || body.password) return loginWithPassword(req, res, body, ip);
 
   if (!['teacher', 'parent', 'student'].includes(wanted)) return bad(res, 'Pick a role first');
   if (!/^\d{3,10}$/.test(String(code || ''))) return bad(res, 'Enter your code');
@@ -176,6 +322,12 @@ export default guard(async (req, res) => {
     if (!db.configured) return bad(res, 'The server is not connected to a database yet', 503);
     if (!secretsReady) return bad(res, 'SESSION_SECRET is not set on the server', 503);
     return login(req, res);
+  }
+
+  if (r === 'signup') {
+    if (!db.configured) return bad(res, 'The server is not connected to a database yet', 503);
+    if (!secretsReady) return bad(res, 'SESSION_SECRET is not set on the server', 503);
+    return signup(req, res);
   }
 
   if (r === 'child') {

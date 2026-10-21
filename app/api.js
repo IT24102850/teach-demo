@@ -49,7 +49,12 @@ export const api = {
   /* auth */
   config: () => get('auth?r=config'),
   me: () => get('auth?r=me'),
-  login: (role, code) => post('auth?r=login', { role, code }),
+  /**
+   * A family signs in with a role and a code; a teacher may instead send an
+   * email and a password, which `extra` carries.
+   */
+  login: (role, code, extra) => post('auth?r=login', extra || { role, code }),
+  signup: (body) => post('auth?r=signup', body),
   logout: () => post('auth?r=logout', {}),
   switchRole: (role) => post('auth?r=role', { role }),
 

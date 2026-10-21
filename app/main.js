@@ -155,6 +155,8 @@ export function render() {
   const role = S.role && ROLES[S.role];
   // Floating controls live outside the scrolling area (point 9's "+").
   if (over) over.innerHTML = !S.loading && S.data && role?.overlay ? role.overlay() : '';
+  // The sign-up form has a +94 box that needs its live formatting.
+  if (!S.role) login.afterLogin();
   if (role?.after) role.after(ctx);
 
   // Point 3: every +94 box on the page gets its live formatting and check.
