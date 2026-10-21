@@ -272,8 +272,17 @@ test('the app opens on the role picker', () => {
   assert.match(html, /data-a="login\.role" data-i="teacher"/);
 });
 
-test('point 5: choosing a role gives the full-screen lock keypad', async () => {
+test('a teacher lands on email and password, not the keypad', async () => {
   await dom.click('login.role', 'teacher');
+  const html = screen();
+  assert.match(html, /Teacher sign in/);
+  assert.match(html, /id="si-email"/);
+  assert.match(html, /data-a="login.tosignup"/, 'with a way to make an account');
+  assert.match(html, /data-a="login.tocode"/, 'and a way back to the keypad');
+});
+
+test('point 5: the keypad is one tap away for a code-only account', async () => {
+  await dom.click('login.tocode');
   const html = screen();
   assert.match(html, /class="lock"/);
   assert.match(html, /class="lock-role">Teacher</);

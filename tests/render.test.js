@@ -883,11 +883,42 @@ test('the login screen renders the roles and the PIN pad', () => {
   assert.match(roles, /data-a="login.role" data-i="parent"/);
   assert.match(roles, /data-a="login.role" data-i="student"/);
 
+  /*
+   * A teacher now lands on email and password - that is the path for anyone
+   * new - and the keypad is one tap away for the accounts that only have a
+   * code. A family goes straight to the keypad.
+   */
   login.ACTIONS['login.role']('teacher', null, { render() {} });
+  const signIn = check('teacher sign in', login.view());
+  assert.match(signIn, /Teacher sign in/);
+  assert.match(signIn, /id="si-email"/);
+  assert.match(signIn, /id="si-pass"/);
+  assert.match(signIn, /type="password"/, 'the password is not shown as it is typed');
+  assert.match(signIn, /data-a="login.tosignup"/);
+  assert.match(signIn, /data-a="login.tocode"/);
+
+  login.ACTIONS['login.tosignup'](null, null, { render() {} });
+  const signUp = check('teacher sign up', login.view());
+  assert.match(signUp, /Create an account/);
+  assert.match(signUp, /id="su-name"/);
+  assert.match(signUp, /id="su-email"/);
+  assert.match(signUp, /id="su-phone"/);
+  assert.match(signUp, /At least 8 characters/);
+  assert.match(signUp, /data-a="login.subject" data-i="Maths"/);
+  assert.match(signUp, /data-a="login.tosignin"/);
+
+  login.ACTIONS['login.tocode'](null, null, { render() {} });
   const pad = check('pinPad', login.view());
   assert.match(pad, /Enter your code/);
   assert.equal((pad.match(/data-a="login.key"/g) || []).length, 11, '0-9 plus delete');
   assert.equal((pad.match(/<i class=""><\/i>/g) || []).length, 4, 'four empty dots');
+
+  // A family never sees the email form at all.
+  login.ACTIONS['login.unrole'](null, null, { render() {} });
+  login.ACTIONS['login.role']('parent', null, { render() {} });
+  const family = login.view();
+  assert.match(family, /Enter your code/);
+  assert.doesNotMatch(family, /id="si-email"/, 'no email path for a family');
   login.ACTIONS['login.unrole'](null, null, { render() {} });
 });
 

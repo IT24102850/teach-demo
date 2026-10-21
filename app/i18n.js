@@ -453,6 +453,25 @@ const EN = {
   plus_locked_blurb:
     'Ask {teacher} to add you to Plus. Then you can see attendance, marks, fees and class updates here.',
   plus_locked_meanwhile: 'You will still get fee reminders on WhatsApp.',
+
+  /* ---------------------------- teachers sign in and sign up ------------ */
+  teacher_sign_in: 'Teacher sign in',
+  sign_in: 'Sign in',
+  email: 'Email',
+  password: 'Password',
+  password_rule: 'At least 8 characters.',
+  no_account: 'No account yet?',
+  have_account: 'Already have an account? Sign in',
+  create_account: 'Create an account',
+  use_code_instead: 'Use a 4-digit code instead',
+  signup_blurb: 'Two minutes, and your classes are ready.',
+  full_name: 'Full name',
+  whatsapp_number: 'WhatsApp number',
+  subjects_you_teach: 'Subjects you teach',
+  enter_email: 'Enter a valid email address',
+  enter_email_password: 'Enter your email and password',
+  pick_subject: 'Pick at least one subject',
+  account_made: 'Welcome to Plus, {name}',
 };
 
 const TA = {
@@ -874,6 +893,24 @@ const TA = {
   plus_locked_blurb:
     'உங்களை Plus இல் சேர்க்க {teacher} அவர்களிடம் கேளுங்கள். பிறகு வருகை, மதிப்பெண்கள், கட்டணம் மற்றும் வகுப்புத் தகவல்களை இங்கே பார்க்கலாம்.',
   plus_locked_meanwhile: 'கட்டண நினைவூட்டல்கள் WhatsApp இல் தொடர்ந்து வரும்.',
+
+  teacher_sign_in: 'ஆசிரியர் உள்நுழைவு',
+  sign_in: 'உள்நுழை',
+  email: 'மின்னஞ்சல்',
+  password: 'கடவுச்சொல்',
+  password_rule: 'குறைந்தது 8 எழுத்துகள்.',
+  no_account: 'கணக்கு இல்லையா?',
+  have_account: 'ஏற்கனவே கணக்கு உள்ளதா? உள்நுழையவும்',
+  create_account: 'கணக்கை உருவாக்கு',
+  use_code_instead: '4 இலக்க குறியீட்டைப் பயன்படுத்து',
+  signup_blurb: 'இரண்டு நிமிடங்கள், உங்கள் வகுப்புகள் தயார்.',
+  full_name: 'முழுப் பெயர்',
+  whatsapp_number: 'WhatsApp எண்',
+  subjects_you_teach: 'நீங்கள் கற்பிக்கும் பாடங்கள்',
+  enter_email: 'சரியான மின்னஞ்சல் முகவரியை இடவும்',
+  enter_email_password: 'மின்னஞ்சல் மற்றும் கடவுச்சொல்லை இடவும்',
+  pick_subject: 'குறைந்தது ஒரு பாடத்தைத் தேர்வு செய்யவும்',
+  account_made: 'Plus க்கு வருக, {name}',
 };
 
 const DICTS = { en: EN, ta: TA };

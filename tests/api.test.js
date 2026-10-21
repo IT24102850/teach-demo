@@ -713,6 +713,215 @@ test('a teacher cannot touch another teacher’s class', async () => {
   assert.equal(res.statusCode, 404);
 });
 
+/* ================== a teacher signs themselves up, and signs in ========== */
+
+const newTeacher = (over = {}) => ({
+  title: 'Mr',
+  name: 'Shehan Asher',
+  email: 'shehan@example.com',
+  phone: '0771234567',
+  password: 'correct horse battery',
+  subjects: ['Maths', 'ICT'],
+  area: 'Dehiwala',
+  ...over,
+});
+
+const signup = (body) =>
+  call(auth, { method: 'POST', url: '/api/auth?r=signup', body });
+
+test('a teacher can make their own account and is signed in straight away', async () => {
+  reset();
+  const res = await signup(newTeacher());
+
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.created, true);
+  assert.equal(res.json.role, 'teacher');
+  assert.equal(res.json.teacher.name, 'Shehan Asher');
+  assert.equal(res.json.join_key, 'shehanasher');
+  // Signed in: the session cookie is already on the response.
+  assert.match(res.headers['set-cookie'] || '', /plus_session=/);
+
+  const made = DB.teachers.find((x) => x.email === 'shehan@example.com');
+  assert.equal(made.phone, '94771234567', 'the number is stored the WhatsApp way');
+  assert.deepEqual(made.subjects, ['Maths', 'ICT']);
+  assert.equal(made.own_place_area, 'Dehiwala');
+});
+
+const madeTeacher = (email) => DB.teachers.find((x) => x.email === email);
+
+test('the password is hashed and salted, never stored as typed', async () => {
+  reset();
+  await signup(newTeacher());
+  const made = madeTeacher('shehan@example.com');
+
+  assert.ok(made.password_hash && made.password_salt);
+  assert.ok(!JSON.stringify(made).includes('correct horse battery'), 'the password is not in the row');
+
+  // Two accounts with the same password get different hashes.
+  await signup(newTeacher({ email: 'other@example.com', phone: '0777654321', name: 'Other Teacher' }));
+  assert.notEqual(
+    made.password_hash,
+    madeTeacher('other@example.com').password_hash,
+    'the same password hashes differently, because each row has its own salt',
+  );
+});
+
+test('the email is stored lowercased, whatever was typed', async () => {
+  reset();
+  await signup(newTeacher({ email: '  Shehan.Asher@Example.COM  ' }));
+  assert.ok(madeTeacher('shehan.asher@example.com'), 'trimmed and lowercased');
+});
+
+test('a half-filled sign-up is refused, field by field', async () => {
+  const cases = [
+    [{ name: '' }, /full name/i],
+    [{ email: 'not-an-email' }, /valid email/i],
+    [{ email: '' }, /valid email/i],
+    [{ password: 'short' }, /8 characters/i],
+    [{ phone: '0112345678' }, /Sri Lankan mobile/i],
+    [{ phone: '' }, /Sri Lankan mobile/i],
+    [{ subjects: [] }, /at least one subject/i],
+  ];
+  for (const [over, expected] of cases) {
+    reset();
+    const res = await signup(newTeacher(over));
+    assert.equal(res.statusCode, 400, JSON.stringify(over));
+    assert.match(res.json.error, expected);
+    assert.equal(DB.teachers.length, 1, 'only the fixture teacher, nothing created');
+  }
+});
+
+test('an email or a number already in use is refused', async () => {
+  reset();
+  await signup(newTeacher());
+
+  const sameEmail = await signup(newTeacher({ phone: '0777654321', name: 'Someone Else' }));
+  assert.equal(sameEmail.statusCode, 409);
+  assert.match(sameEmail.json.error, /that email/i);
+
+  const sameNumber = await signup(newTeacher({ email: 'new@example.com', name: 'Someone Else' }));
+  assert.equal(sameNumber.statusCode, 409);
+  assert.match(sameNumber.json.error, /that number/i);
+});
+
+test('two teachers with the same name get different sign-up links', async () => {
+  reset();
+  await signup(newTeacher());
+  const second = await signup(
+    newTeacher({ email: 'two@example.com', phone: '0777654321' }),
+  );
+  assert.equal(second.json.join_key, 'shehanasher2');
+});
+
+test('sign-ups from one address are capped', async () => {
+  reset();
+  process.env.SIGNUP_MAX_PER_HOUR = '2';
+  const fresh = (await import(`../api/auth.js?cap=${Date.now()}`)).default;
+  const run = async (n) => {
+    const res = makeRes();
+    await fresh(
+      makeReq({
+        method: 'POST',
+        url: '/api/auth?r=signup',
+        body: newTeacher({ email: `t${n}@example.com`, phone: `077000000${n}`, name: `Teacher ${n}` }),
+      }),
+      res,
+    );
+    return res;
+  };
+  assert.equal((await run(1)).statusCode, 200);
+  assert.equal((await run(2)).statusCode, 200);
+  assert.equal((await run(3)).statusCode, 429);
+  delete process.env.SIGNUP_MAX_PER_HOUR;
+});
+
+/* ------------------------------------------- signing in with a password -- */
+
+test('a teacher signs in with the email and password they chose', async () => {
+  reset();
+  await signup(newTeacher());
+
+  const res = await call(auth, {
+    method: 'POST',
+    url: '/api/auth?r=login',
+    body: { email: 'shehan@example.com', password: 'correct horse battery' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.role, 'teacher');
+  assert.equal(res.json.teacher.name, 'Shehan Asher');
+  assert.match(res.headers['set-cookie'] || '', /plus_session=/);
+});
+
+test('the email is not case sensitive at sign in', async () => {
+  reset();
+  await signup(newTeacher());
+  const res = await call(auth, {
+    method: 'POST',
+    url: '/api/auth?r=login',
+    body: { email: 'SHEHAN@EXAMPLE.COM', password: 'correct horse battery' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+});
+
+test('a wrong password and an unknown email give the same answer', async () => {
+  reset();
+  await signup(newTeacher());
+
+  const wrongPassword = await call(auth, {
+    method: 'POST',
+    url: '/api/auth?r=login',
+    body: { email: 'shehan@example.com', password: 'not the password' },
+  });
+  const unknownEmail = await call(auth, {
+    method: 'POST',
+    url: '/api/auth?r=login',
+    body: { email: 'nobody@example.com', password: 'correct horse battery' },
+  });
+
+  assert.equal(wrongPassword.statusCode, 401);
+  assert.equal(unknownEmail.statusCode, 401);
+  assert.equal(
+    wrongPassword.json.error,
+    unknownEmail.json.error,
+    'telling them apart would say who has an account here',
+  );
+});
+
+test('an account that only has a code cannot be opened with a password', async () => {
+  reset();
+  // The fixture teacher signs in with 1234 and has no password at all.
+  DB.teachers[0].email = 'nimal@example.com';
+  const res = await call(auth, {
+    method: 'POST',
+    url: '/api/auth?r=login',
+    body: { email: 'nimal@example.com', password: 'anything at all' },
+  });
+  assert.equal(res.statusCode, 401, 'no password_hash means no password login');
+});
+
+test('a password with no email, or the other way round, is refused', async () => {
+  reset();
+  for (const body of [
+    { email: 'shehan@example.com', password: '' },
+    { email: '', password: 'correct horse battery' },
+  ]) {
+    const res = await call(auth, { method: 'POST', url: '/api/auth?r=login', body });
+    assert.equal(res.statusCode, 400, JSON.stringify(body));
+    assert.match(res.json.error, /email and password/i);
+  }
+});
+
+test('the old code login still works alongside the new one', async () => {
+  reset();
+  const res = await call(auth, {
+    method: 'POST',
+    url: '/api/auth?r=login',
+    body: { role: 'teacher', code: '1234' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.role, 'teacher');
+});
+
 /* ===================== Plus subscriptions and the Income tab ============= */
 
 test('a subscription is recorded by hand, and answers with the new count', async () => {
