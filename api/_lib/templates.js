@@ -11,7 +11,8 @@ const EN = {
   // Handoff draft 2: sent from the Invite screen to a class that is not yet
   // on Plus. No amounts, as the handoff asks.
   plusInvite: (v) =>
-    `Hi! ${v.teacher}'s ${v.class} class now uses Plus. ` +
+    // No class picked reads "Nimal Sir's classes now use Plus", not "classes class".
+    `Hi! ${v.teacher}'s ${v.class ? `${v.class} class now uses` : 'classes now use'} Plus. ` +
     `Join to see attendance, marks and class updates: ${v.link}`,
   classReminder: (v) =>
     `Reminder: ${v.student} has ${v.subject} on ${v.day} at ${v.time} at ${v.place}.`,
@@ -53,7 +54,7 @@ const TA = {
   invite: (v) =>
     `வணக்கம், ${v.teacher} பேசுகிறேன். எனது வகுப்புகளில் சேர இந்த சிறிய படிவத்தை நிரப்புங்கள்: ${v.link}. ஒரு நிமிடம் போதும்.`,
   plusInvite: (v) =>
-    `வணக்கம்! ${v.teacher} அவர்களின் ${v.class} வகுப்பு இப்போது Plus பயன்படுத்துகிறது. ` +
+    `வணக்கம்! ${v.teacher} அவர்களின் ${v.class ? `${v.class} வகுப்பு` : 'வகுப்புகள்'} இப்போது Plus பயன்படுத்துகிறது. ` +
     `வருகை, மதிப்பெண்கள் மற்றும் வகுப்புத் தகவல்களைப் பார்க்க இணையவும்: ${v.link}`,
   classReminder: (v) =>
     `நினைவூட்டல்: ${v.student} அவர்களுக்கு ${v.day} ${v.time} மணிக்கு ${v.place} இல் ${v.subject} வகுப்பு உள்ளது.`,
@@ -92,7 +93,7 @@ const TA = {
  */
 const SI = {
   plusInvite: (v) =>
-    `\u0d86\u0dba\u0dd4\u0db6\u0ddd\u0dc0\u0db1\u0dca! ${v.teacher}\u0d9c\u0dda ${v.class} \u0db4\u0db1\u0dca\u0dad\u0dd2\u0dba \u0daf\u0dd0\u0db1\u0dca Plus \u0db7\u0dcf\u0dc0\u0dd2\u0dad\u0dcf \u0d9a\u0dbb\u0dba\u0dd2. ` +
+    `\u0d86\u0dba\u0dd4\u0db6\u0ddd\u0dc0\u0db1\u0dca! ${v.teacher}\u0d9c\u0dda ${v.class ? `${v.class} \u0db4\u0db1\u0dca\u0dad\u0dd2\u0dba` : '\u0db4\u0db1\u0dca\u0dad\u0dd2'} \u0daf\u0dd0\u0db1\u0dca Plus \u0db7\u0dcf\u0dc0\u0dd2\u0dad\u0dcf \u0d9a\u0dbb\u0dba\u0dd2. ` +
     `\u0db4\u0dd0\u0db8\u0dd2\u0dab\u0dd3\u0db8, \u0dbd\u0d9a\u0dd4\u0dab\u0dd4 \u0dc3\u0dc4 \u0db4\u0db1\u0dca\u0dad\u0dd2 \u0dad\u0ddc\u0dbb\u0dad\u0dd4\u0dbb\u0dd4 \u0db6\u0dbd\u0db1\u0dca\u0db1 \u0d91\u0d9a\u0dca\u0dc0\u0db1\u0dca\u0db1: ${v.link}`,
   feePlus: (v) =>
     `${EN.fee(v)}\n\n` +

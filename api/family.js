@@ -15,7 +15,7 @@ import { familySession, startSession } from './_lib/session.js';
 import * as R from './_lib/rules.js';
 
 const CHILD_FIELDS =
-  'id,name,grade,school,area,curriculum,subject,fee_per_class,parent_name,status,slip_path,' +
+  'id,name,grade,school,area,curriculum,subject,fee_per_class,fee_status,parent_name,status,slip_path,' +
   'slip_sent_at,amount_due,pending_classes,days_late,hist,total_classes,present_classes,' +
   'mark_count,avg_pct,best_pct,first_pct,latest_pct';
 

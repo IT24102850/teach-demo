@@ -195,7 +195,9 @@ export function openSheet(html, { onClose } = {}) {
   host.classList.add('open');
   sheetCloser = onClose || null;
   const first = host.querySelector('input,select,button');
-  if (first) setTimeout(() => first.focus(), 60);
+  // preventScroll: focusing the first row of a time wheel must not scroll the
+  // wheel to it, which would quietly change the time.
+  if (first) setTimeout(() => first.focus({ preventScroll: true }), 60);
 }
 
 export function closeSheet() {
@@ -383,6 +385,66 @@ export const telValue = (id) => toLkMobile(document.getElementById(id)?.value ||
 /** document.querySelector needs ids escaped; CSS.escape is not everywhere. */
 const CSS_escape = (value) =>
   typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
+
+/* ------------------------------------------------ point 13 · time wheels -- */
+
+/** Row height of a wheel, in px. Matches `.wheel-i` in style.css. */
+export const WHEEL_ROW = 40;
+
+/**
+ * One scrolling column of an iPhone-style picker.
+ *
+ * Every row is a button carrying `act` and "<name>:<value>", so a tap picks
+ * it like any other action. `wireWheels` adds the flick: when a column stops
+ * on a row, that row's argument is handed to `onSettle`.
+ */
+export function wheel(name, options, current, act, aria = '') {
+  return `<div class="wheel" data-wheel="${attr(name)}" role="listbox" aria-label="${attr(aria || name)}">${options
+    .map((o) => {
+      const on = String(o.value) === String(current);
+      return `<button type="button" class="wheel-i${on ? ' on' : ''}" role="option" aria-selected="${on}"
+        data-a="${attr(act)}" data-i="${attr(`${name}:${o.value}`)}">${esc(o.label)}</button>`;
+    })
+    .join('')}</div>`;
+}
+
+/** Scroll every column under `root` so its chosen row sits in the band. */
+export function centerWheels(root) {
+  for (const column of root?.querySelectorAll?.('.wheel') || []) {
+    const rows = [...column.querySelectorAll('.wheel-i')];
+    const at = rows.findIndex((r) => r.classList.contains('on'));
+    if (at >= 0) column.scrollTop = at * (rows[0].offsetHeight || WHEEL_ROW);
+  }
+}
+
+/** Centre the wheels, then report the row each one comes to rest on. */
+export function wireWheels(root, onSettle) {
+  centerWheels(root);
+  for (const column of root?.querySelectorAll?.('.wheel') || []) {
+    if (column.dataset.wired) continue;
+    column.dataset.wired = '1';
+    let settle = null;
+    column.addEventListener(
+      'scroll',
+      () => {
+        clearTimeout(settle);
+        settle = setTimeout(() => {
+          const rows = [...column.querySelectorAll('.wheel-i')];
+          if (!rows.length) return;
+          const row = rows[0].offsetHeight || WHEEL_ROW;
+          const at = Math.min(rows.length - 1, Math.max(0, Math.round(column.scrollTop / row)));
+          if (rows[at].classList.contains('on')) return;
+          rows.forEach((r, i) => {
+            r.classList.toggle('on', i === at);
+            r.setAttribute('aria-selected', String(i === at));
+          });
+          onSettle(rows[at].dataset.i);
+        }, 120);
+      },
+      { passive: true },
+    );
+  }
+}
 
 /* ------------------------------------------------------ point 11 · tick --- */
 

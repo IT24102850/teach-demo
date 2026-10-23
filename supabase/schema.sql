@@ -55,7 +55,11 @@ create table if not exists students (
   slip_path         text,                                  -- storage object path
   slip_sent_at      timestamptz,
   last_reminded_at  timestamptz,
-  created_at        timestamptz not null default now()
+  created_at        timestamptz not null default now(),
+  -- Paid / Unpaid as the teacher set it. A zero balance is not "paid": a new
+  -- student has no classes on the ledger yet and has not paid anything.
+  fee_status        text        not null default 'unpaid'
+                     check (fee_status in ('unpaid','paid'))
 );
 create index if not exists students_teacher_idx on students(teacher_id, status);
 
@@ -341,6 +345,29 @@ alter table payments add  constraint payments_method_check
 
 create unique index if not exists payments_receipt_uq
   on payments(teacher_id, receipt_no) where receipt_no is not null;
+
+-- The student's Paid / Unpaid, set by hand (migration 006). Added before the
+-- views below, because v_students is built from s.* and must pick it up.
+--
+-- Only on the run that adds the column, a student whose ledger is settled by
+-- a real payment starts as Paid - that is what the screen already said about
+-- them. Everyone else, including every student with nothing on the ledger,
+-- starts Unpaid. Later runs leave whatever the teacher has set alone.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                  where table_schema = 'public' and table_name = 'students'
+                    and column_name = 'fee_status') then
+    alter table students add column fee_status text not null default 'unpaid';
+    update students s
+       set fee_status = 'paid'
+      from student_dues d
+     where d.student_id = s.id and d.amount_due = 0 and d.paid_total > 0;
+  end if;
+end $$;
+alter table students drop constraint if exists students_fee_status_check;
+alter table students add  constraint students_fee_status_check
+  check (fee_status in ('unpaid','paid'));
 
 -- Number the payments that were taken before receipts existed.
 update payments p

@@ -79,6 +79,7 @@ const STUDENTS = [
   student({
     id: 's2',
     name: 'Amaya Jayasinghe',
+    fee_status: 'paid',
     fee_per_class: 1200,
     amount_due: 0,
     pending_classes: 0,
@@ -719,9 +720,44 @@ test('Fees shows a friendly state when everyone has paid', () => {
     s.amount_due = 0;
     s.pending_classes = 0;
     s.days_late = 0;
+    s.fee_status = 'paid';
   }
   const html = check('fees paid', teacher.fees());
   assert.match(html, /Everyone has paid/);
+});
+
+test('Fees lists who owes nothing on the ledger but is not marked paid', () => {
+  asTeacher();
+  const html = check('fees unpaid', teacher.fees());
+  assert.match(html, /Not marked paid yet/);
+  assert.match(html, /Ishara Madushani/, 'a new student with nothing on the ledger is Unpaid, not Paid');
+  assert.match(html, /data-a="fees\.status" data-i="s4\|paid"/, 'with Mark paid beside them');
+  assert.ok(!html.includes('Amaya'), 'a student marked paid is not listed');
+});
+
+test('the student list never says Paid by default', () => {
+  asTeacher();
+  const html = check('students', teacher.studentsView());
+  const row = (name) => html.slice(html.indexOf(name), html.indexOf(name) + 600);
+  assert.match(row('Ishara Madushani'), /Unpaid/, 'nothing owed and nothing confirmed');
+  assert.match(row('Amaya Jayasinghe'), /class="pill g">Paid/, 'marked paid by the teacher');
+  assert.match(row('Kasun Perera'), /LKR 6,000/, 'money owed shows as the amount');
+});
+
+test('the student screen sets Paid / Unpaid by hand', () => {
+  asTeacher({ sub: { view: 'student', id: 's4' } });
+  const html = teacher.studentDetail();
+  assert.match(html, /Payment status/);
+  assert.match(html, /aria-selected="true" class="on" data-a="fees\.status" data-i="s4\|unpaid"/);
+  assert.match(html, /data-a="fees\.status" data-i="s4\|paid"/);
+});
+
+test('a class screen offers Add students, and says so when it is empty', () => {
+  asTeacher({ sub: { view: 'class', id: 'c1' } });
+  const html = teacher.classDetail();
+  assert.match(html, /data-a="roster\.open" data-i="c1"/);
+  S.data.classes[0].student_ids = [];
+  assert.match(teacher.classDetail(), /No students yet/);
 });
 
 test('the months screen charts collected against still owed', () => {

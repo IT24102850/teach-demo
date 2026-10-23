@@ -99,7 +99,8 @@ const checks = [
                ('classes','kind'), ('classes','venue_type'),
                ('classes','venue_name'), ('classes','area'),
                ('sessions','started_at'), ('sessions','ended_at'),
-               ('payments','receipt_no'), ('payments','reversed_at')
+               ('payments','receipt_no'), ('payments','reversed_at'),
+               ('students','fee_status')
              )`)
       ).map((r) => r.col);
       for (const col of [
@@ -117,6 +118,7 @@ const checks = [
         'sessions.ended_at',
         'payments.receipt_no',
         'payments.reversed_at',
+        'students.fee_status',
       ]) {
         t.ok(columns.includes(col), `column ${col}`);
       }

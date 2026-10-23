@@ -424,14 +424,27 @@ export const isLkMobile = (raw) => toLkMobile(raw) !== null;
 
 /* -------------------------------------------- point 13 · class time slots -- */
 
-/** Start chips: every half hour from 06:00 to 21:00. */
-export function startChoices(from = 6, to = 21) {
-  const out = [];
-  for (let m = from * 60; m <= to * 60; m += 30) out.push(fromMinutes(m));
-  return out;
+/**
+ * The time wheels: hour 1-12, minutes in fives, AM/PM - the iPhone alarm
+ * picker. Fives rather than every minute, because a tuition class does not
+ * start at 4:07 and a 60-row wheel is a long way to flick.
+ */
+export const WHEEL_HOURS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+export const WHEEL_MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
+
+/** "16:35" -> { h: 4, m: 35, pm: true }, the three wheels' positions. */
+export function clockParts(time) {
+  const total = minutesOf(time);
+  const h24 = Math.floor(total / 60) % 24;
+  return { h: h24 % 12 || 12, m: total % 60, pm: h24 >= 12 };
 }
 
-export const DURATION_CHOICES = [1, 1.5, 2, 2.5, 3];
+/** The reverse of clockParts: { h: 12, m: 0, pm: false } -> "00:00". */
+export const fromClockParts = ({ h, m, pm }) =>
+  fromMinutes(((Number(h) % 12) + (pm ? 12 : 0)) * 60 + Number(m));
+
+/** Minutes from start to end on the same day; zero or less means end is not after start. */
+export const spanMinutes = (start, end) => minutesOf(end) - minutesOf(start);
 
 export const fromMinutes = (total) => {
   const m = ((Math.round(total) % 1440) + 1440) % 1440;
@@ -573,15 +586,17 @@ export function venueLabel(cls, { ownPlaceName = 'My home' } = {}) {
 }
 
 /**
- * Point 12's "Done when": an individual class cannot hold two students, and a
- * group class cannot hold one, or be saved without somewhere to be.
+ * Point 12's "Done when": an individual class holds exactly one student, and
+ * a group class cannot be saved without somewhere to be.
+ *
+ * A group class may be saved with no students at all: the teacher creates
+ * "Grade 10 Maths" first and fills it from the class screen's Add students.
  * Returns an i18n key, or null when the draft is good.
  */
 export function classDraftError(draft) {
   const count = (draft.student_ids || []).length;
-  if (!count) return 'pick_students';
+  if (draft.kind !== 'group' && !count) return 'pick_students';
   if (draft.kind === 'individual' && count !== 1) return 'individual_one_student';
-  if (draft.kind === 'group' && count < 2) return 'group_two_students';
 
   if (draft.kind === 'group') {
     if (!VENUE_TYPES.includes(draft.venue_type)) return 'pick_venue';
@@ -597,6 +612,40 @@ export function classDraftError(draft) {
   if (!draft.start_time) return 'pick_time';
   if (!(Number(draft.duration_hours) > 0)) return 'pick_time';
   return null;
+}
+
+/* --------------------------------------------- the student's fee status -- */
+
+/**
+ * What the fee pill says.
+ *
+ *   owes   - the ledger has unpaid classes; the amount is what is shown.
+ *   paid   - nothing owed, and the teacher has confirmed the payment.
+ *   unpaid - nothing owed on the ledger, but nobody has said it was paid.
+ *
+ * A zero balance on its own is not "Paid": a student added this morning has
+ * no classes on the ledger yet, and has not paid anything either.
+ */
+export function feeState(student) {
+  if (Number(student?.amount_due) > 0) return 'owes';
+  return student?.fee_status === 'paid' ? 'paid' : 'unpaid';
+}
+
+/** The grades on the list, lowest first, for the Add students filter. */
+export const gradesOf = (list) =>
+  [...new Set((list || []).map((s) => s.grade).filter((g) => g !== null && g !== undefined && g !== ''))]
+    .map(Number)
+    .sort((a, b) => a - b);
+
+/** Add students: the list narrowed by grade ('all' or a number) and a search. */
+export function filterRoster(list, { grade = 'all', q = '' } = {}) {
+  const needle = String(q).trim().toLowerCase();
+  return (list || []).filter(
+    (s) =>
+      (grade === 'all' || Number(s.grade) === Number(grade)) &&
+      (!needle ||
+        `${s.name} ${s.subject || ''} ${s.school || ''} ${s.area || ''}`.toLowerCase().includes(needle)),
+  );
 }
 
 /* ------------------------------------- point 10 · class start and end ----- */

@@ -93,6 +93,7 @@ function resetDb() {
       student({
         id: AMAYA,
         name: 'Amaya Jayasinghe',
+        fee_status: 'paid',
         call_name: 'Amaya',
         fee_per_class: 1200,
         amount_due: 0,
@@ -144,6 +145,7 @@ const bootstrap = () => ({
 
 let lastFinish = null;
 let lastMove = null;
+let lastRoster = null;
 /* Dropping on this day is the one the stub reports a clash for. */
 const CLASH_DAY = '2026-03-26';
 
@@ -220,6 +222,11 @@ installFetch({
         link: 'https://wa.me/94771234567?text=moved',
       })),
     };
+  },
+
+  'POST /api/teacher?r=class.students': (body) => {
+    lastRoster = body;
+    return { added: body.student_ids.length, removed: 0, count: body.student_ids.length };
   },
 
   'POST /api/teacher?r=payment.record': (body) => {
@@ -398,19 +405,21 @@ test('point 12: "my own place" needs no typing', async () => {
   assert.doesNotMatch(html, /id="c-venue"/, 'no institute name to type');
 });
 
-test('point 13: the time sheet has start chips, length chips and the result', async () => {
+test('point 13: the time sheet has a start wheel, an end wheel and the result', async () => {
   await dom.click('time.open');
   const html = sheet();
   assert.match(html, /Choose time/);
-  assert.match(html, /data-a="time\.start" data-i="16:00"/);
-  assert.match(html, /data-a="time\.dur" data-i="2.5"/);
+  assert.match(html, /Start time/);
+  assert.match(html, /End time/);
+  assert.match(html, /class="wheel-i on"[^>]*data-i="start:h:4"/, 'the start sits on 4');
+  assert.match(html, /class="wheel-i on"[^>]*data-i="start:p:PM"/);
+  assert.match(html, /class="wheel-i on"[^>]*data-i="end:h:5"/, 'and the end on 5:30, 1.5 h later');
+  assert.match(html, /class="wheel-i on"[^>]*data-i="end:m:30"/);
   assert.match(html, /Class runs/);
-  assert.match(html, /Custom/);
 });
 
-test('point 13: picking 4:00 PM and 2.5 h shows 4:00 PM – 6:30 PM', async () => {
-  await dom.click('time.start', '16:00');
-  await dom.click('time.dur', '2.5');
+test('point 13: turning the end to 6:30 PM shows 4:00 PM – 6:30 PM', async () => {
+  await dom.click('time.wheel', 'end:h:6');
   const html = sheet();
   assert.match(html, /4:00 PM – 6:30 PM/);
   assert.match(html, /2 h 30 m/);
@@ -427,13 +436,49 @@ test('point 13: an overlap is named, with Save anyway offered', async () => {
   assert.match(html, /Save anyway\?/);
 });
 
-test('point 13: moving off the clash clears the warning', async () => {
-  await dom.click('time.start', '19:00');
+test('point 13: moving the start off the clash carries the end with it', async () => {
+  await dom.click('time.wheel', 'start:h:7');
   const html = sheet();
   assert.doesNotMatch(html, /⚠ Clash/);
-  assert.match(html, /7:00 PM – 9:30 PM/);
+  assert.match(html, /7:00 PM – 9:30 PM/, 'still 2 h 30 m long');
+});
+
+test('point 13: an end before the start is named, and Done will not take it', async () => {
+  await dom.click('time.wheel', 'end:h:6');
+  assert.match(sheet(), /The end time must be after the start time/);
   await dom.click('time.done');
+  assert.match(sheet(), /End time/, 'still on the time sheet');
+
+  await dom.click('time.wheel', 'end:h:9');
+  await dom.click('time.wheel', 'end:m:0');
+  assert.match(sheet(), /7:00 PM – 9:00 PM/);
+  await dom.click('time.done');
+  assert.match(sheet(), /7:00 PM – 9:00 PM/, 'the class sheet shows the new slot');
   await dom.click('sheet.close');
+});
+
+/* ======================================== Add students to a class ======== */
+
+test('Add students opens on the class grade, with every student to pick from', async () => {
+  await dom.click('class.detail', CLASS);
+  assert.ok(screen().includes(`data-a="roster.open" data-i="${CLASS}"`));
+  await dom.click('roster.open', CLASS);
+  const html = sheet();
+  assert.match(html, /Add students/);
+  assert.match(html, /aria-checked="true" data-a="roster\.grade" data-i="11"/, 'Grade 11 is chosen for a Grade 11 class');
+  assert.match(html, new RegExp(`class="roster-i on"[^>]*\\s+data-a="roster\\.toggle" data-i="${KASUN}"`), 'who is already in the class is ticked');
+});
+
+test('Add students: untick, select all shown, and save the roster in one go', async () => {
+  await dom.click('roster.toggle', AMAYA);
+  assert.match(sheet(), /Save · 1 students/);
+  await dom.click('roster.all');
+  assert.match(sheet(), /Save · 2 students/, 'everyone the filter shows');
+  await dom.click('roster.grade', 'all');
+  assert.match(sheet(), /All grades/);
+  await dom.click('roster.save');
+  assert.deepEqual(lastRoster, { class_id: CLASS, student_ids: [KASUN, AMAYA] });
+  await dom.click('back');
 });
 
 /* ===================== point 9, phase 2 · drag a class, tell the parents == */

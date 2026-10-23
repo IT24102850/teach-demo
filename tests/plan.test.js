@@ -627,11 +627,22 @@ test('point 12: an individual class cannot hold two students', () => {
   );
 });
 
-test('point 12: a group class cannot hold one, or be saved without a venue', () => {
+test('point 12: a group class may start empty, but not without a venue', () => {
   const base = { days: [1], start_time: '16:00', duration_hours: 1 };
+  // Create "Grade 10 Maths" first, fill it from Add students afterwards.
+  assert.equal(
+    CR.classDraftError({ ...base, kind: 'group', student_ids: [], venue_type: 'institute', venue_name: 'X', area: 'N' }),
+    null,
+  );
   assert.equal(
     CR.classDraftError({ ...base, kind: 'group', student_ids: ['a'], venue_type: 'institute', venue_name: 'X', area: 'N' }),
-    'group_two_students',
+    null,
+  );
+  assert.equal(CR.classDraftError({ ...base, kind: 'individual', student_ids: [], area: 'N' }), 'pick_students');
+  assert.equal(
+    SR.classDraftError({ ...base, kind: 'group', student_ids: [], venue_type: 'own_place', area: 'N' }),
+    null,
+    'and the server agrees',
   );
   assert.equal(
     CR.classDraftError({ ...base, kind: 'group', student_ids: ['a', 'b'], venue_type: 'institute', area: 'N' }),
@@ -693,12 +704,39 @@ test('point 13: the clock reads the way people say it', () => {
   assert.equal(CR.clock12('23:59'), '11:59 PM');
 });
 
-test('point 13: the start chips run every half hour from 6:00 to 21:00', () => {
-  const chips = CR.startChoices();
-  assert.equal(chips[0], '06:00');
-  assert.equal(chips[chips.length - 1], '21:00');
-  assert.equal(chips.length, 31);
-  assert.deepEqual(CR.DURATION_CHOICES, [1, 1.5, 2, 2.5, 3]);
+test('point 13: the wheels are hour 1-12, minutes in fives, and AM/PM', () => {
+  assert.deepEqual(CR.WHEEL_HOURS, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.equal(CR.WHEEL_MINUTES.length, 12);
+  assert.equal(CR.WHEEL_MINUTES[11], 55);
+  assert.deepEqual(CR.clockParts('16:35'), { h: 4, m: 35, pm: true });
+  assert.deepEqual(CR.clockParts('00:05'), { h: 12, m: 5, pm: false });
+  assert.deepEqual(CR.clockParts('12:00'), { h: 12, m: 0, pm: true });
+  assert.equal(CR.fromClockParts({ h: 12, m: 0, pm: false }), '00:00', '12 AM is midnight');
+  assert.equal(CR.fromClockParts({ h: 12, m: 30, pm: true }), '12:30', '12 PM is noon');
+  assert.equal(CR.fromClockParts({ h: 6, m: 40, pm: false }), '06:40');
+  for (const time of ['00:00', '06:40', '12:00', '16:35', '23:55']) {
+    assert.equal(CR.fromClockParts(CR.clockParts(time)), time, `${time} survives the round trip`);
+  }
+});
+
+test('point 13: the length comes from the end time, and must be positive', () => {
+  assert.equal(CR.spanMinutes('16:00', '17:30'), 90);
+  assert.equal(CR.spanMinutes('16:00', '16:00'), 0);
+  assert.ok(CR.spanMinutes('16:00', '15:00') < 0);
+  // Five-minute steps survive the database's two decimal places of hours.
+  for (let m = 5; m <= 240; m += 5) {
+    const stored = Math.round((m / 60) * 100) / 100;
+    assert.equal(CR.endTime('16:00', stored), CR.fromMinutes(16 * 60 + m), `${m} min`);
+  }
+});
+
+test('point 13: the time sheet is two sets of wheels, start and end', () => {
+  const forms = read('app/screens/teacher-forms.js');
+  assert.match(forms, /clockWheels\('start'\)/);
+  assert.match(forms, /clockWheels\('end'\)/);
+  assert.match(forms, /wireWheels\(/, 'a flick, not only a tap, turns a wheel');
+  assert.match(CSS, /scroll-snap-type:\s*y mandatory/, 'rows snap into the band');
+  assert.match(read('app/ui.js'), /preventScroll: true/, 'focusing a row must not turn its wheel');
 });
 
 test('point 13: a class 6:30 – 7:30 does not clash with 4:00 – 6:30', () => {

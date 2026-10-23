@@ -22,7 +22,7 @@ const PAYMENT_METHODS = ['Cash', 'Bank transfer', 'Online', 'Slip'];
 
 const STUDENT_FIELDS =
   'id,name,call_name,grade,school,area,curriculum,subject,wanted_subjects,ambition,' +
-  'fee_per_class,parent_name,parent_occupation,parent_phone,status,slip_path,slip_sent_at,' +
+  'fee_per_class,fee_status,parent_name,parent_occupation,parent_phone,status,slip_path,slip_sent_at,' +
   'last_reminded_at,created_at,amount_due,pending_classes,oldest_unpaid,paid_total,days_late,' +
   'hist,total_classes,present_classes,mark_count,avg_pct,best_pct,first_pct,latest_pct';
 
@@ -195,6 +195,12 @@ const mustClass = async (tid, id) => {
 };
 
 const teacherName = (t) => `${t.name}${t.title ? ` ${t.title}` : ''}`;
+
+/* Paid / Unpaid: set by the teacher, never assumed from a zero balance. */
+const FEE_STATUSES = ['unpaid', 'paid'];
+
+const setFeeStatus = (tid, studentId, status) =>
+  db.update('students', { fee_status: status }, { id: `eq.${studentId}`, teacher_id: `eq.${tid}` });
 
 /** The public sign-up link for this teacher, as the QR code and the invite use it. */
 const joinLink = (req, joinKey) => {
@@ -405,11 +411,13 @@ async function handlePost(req, res, tid, r) {
         start_date: body.start_date || R.today(),
         once_date: once,
       });
-      await db.insert(
-        'class_students',
-        studentIds.map((id) => ({ class_id: cls.id, student_id: id })),
-        { returning: 'minimal' },
-      );
+      if (studentIds.length) {
+        await db.insert(
+          'class_students',
+          studentIds.map((id) => ({ class_id: cls.id, student_id: id })),
+          { returning: 'minimal' },
+        );
+      }
       return ok(res, { class_id: cls.id, title: cls.title, first_date: once || null });
     }
 
@@ -474,6 +482,41 @@ async function handlePost(req, res, tid, r) {
         { id: `eq.${cls.id}`, teacher_id: `eq.${tid}` },
       );
       return ok(res, { saved: true, class_id: cls.id });
+    }
+
+    /**
+     * Add students: the class's whole roster, as ticked on the sheet. Whoever
+     * is new is added and whoever was unticked is taken out, in one request,
+     * so the teacher fills a Grade 10 class in one go rather than one by one.
+     * Attendance and charges already recorded are left alone.
+     */
+    case 'class.students': {
+      const cls = await mustClass(tid, body.class_id);
+      const wanted = [
+        ...new Set((Array.isArray(body.student_ids) ? body.student_ids : []).filter(Boolean).map(String)),
+      ];
+      const owned = wanted.length
+        ? await db.select('students', { select: 'id', teacher_id: `eq.${tid}`, id: db.inList(wanted) })
+        : [];
+      if (owned.length !== wanted.length) return bad(res, 'Some students are not yours', 403);
+      if (R.classKind(cls) === 'individual' && wanted.length !== 1) {
+        return bad(res, 'An individual class has exactly one student');
+      }
+
+      const before = new Set(cls.student_ids);
+      const added = wanted.filter((id) => !before.has(id));
+      const removed = cls.student_ids.filter((id) => !wanted.includes(id));
+      if (removed.length) {
+        await db.remove('class_students', { class_id: `eq.${cls.id}`, student_id: db.inList(removed) });
+      }
+      if (added.length) {
+        await db.insert(
+          'class_students',
+          added.map((id) => ({ class_id: cls.id, student_id: id })),
+          { onConflict: 'class_id,student_id', returning: 'minimal' },
+        );
+      }
+      return ok(res, { added: added.length, removed: removed.length, count: wanted.length });
     }
 
     /**
@@ -879,6 +922,9 @@ async function handlePost(req, res, tid, r) {
         parent_occupation: String(body.parent_occupation || '').trim() || null,
         parent_phone: phone,
         status: Number(body.fee_per_class) > 0 ? 'active' : 'pending',
+        // Unpaid until the teacher says otherwise: a new student owes nothing
+        // on the ledger yet, which is not the same as having paid.
+        fee_status: body.fee_status === 'paid' ? 'paid' : 'unpaid',
       });
       return ok(res, { student_id: student.id, status: student.status });
     }
@@ -912,6 +958,22 @@ async function handlePost(req, res, tid, r) {
       if (!Object.keys(patch).length) return bad(res, 'Nothing to change');
       await db.update('students', patch, { id: `eq.${body.student_id}`, teacher_id: `eq.${tid}` });
       return ok(res, { saved: true });
+    }
+
+    /**
+     * Paid / Unpaid by hand. "Paid" with classes still owing on the ledger is
+     * refused: that is a payment, and it goes through payment.record so the
+     * receipt and the balance agree with what the pill says.
+     */
+    case 'student.fee_status': {
+      const status = String(body.fee_status || '');
+      if (!FEE_STATUSES.includes(status)) return bad(res, 'Pick paid or unpaid');
+      const student = await mustStudent(tid, body.student_id, 'id,amount_due');
+      if (status === 'paid' && Number(student.amount_due) > 0) {
+        return bad(res, 'Record the payment first: there are classes still owing');
+      }
+      await setFeeStatus(tid, student.id, status);
+      return ok(res, { saved: true, fee_status: status });
     }
 
     /**
@@ -1075,6 +1137,9 @@ async function handlePost(req, res, tid, r) {
       const receipt = R.receiptNo(result.receipt_no);
       const amount = Number(result.amount);
       const balance = Number(result.balance);
+      // Recording the money is the teacher confirming it. A part payment
+      // leaves a balance, and the pill keeps showing it.
+      if (balance <= 0) await setFeeStatus(tid, student.id, 'paid');
 
       // The tick in the sheet is on by default, but a teacher who is standing
       // next to the parent can turn it off.
@@ -1113,6 +1178,7 @@ async function handlePost(req, res, tid, r) {
         p_payment: body.payment_id,
       });
       const student = await mustStudent(tid, result.student_id, 'id,name,parent_phone,amount_due');
+      await setFeeStatus(tid, student.id, 'unpaid');
       await db.insert(
         'events',
         {
@@ -1142,6 +1208,7 @@ async function handlePost(req, res, tid, r) {
         p_method: 'Slip',
         p_paid_date: body.paid_date || null,
       });
+      await setFeeStatus(tid, student.id, 'paid');
       const receipt = R.receiptNo(result.receipt_no);
       const amount = Number(result.amount);
       const sent = await notifyParent({
@@ -1503,7 +1570,7 @@ export default guard(async (req, res) => {
         const teacher = await db.selectOne('teachers', { select: 'name,title,join_key', id: `eq.${tid}` });
         const cls = classId ? await mustClass(tid, classId) : null;
         const link = joinLink(req, teacher.join_key);
-        const title = cls?.title || 'classes';
+        const title = cls?.title || '';
 
         return ok(res, {
           link,

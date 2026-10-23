@@ -401,15 +401,17 @@ export function calendar() {
 }
 
 /**
- * Point 9: the "+" for a new class.
+ * Point 9: the button for a new class.
  *
  * It is drawn into the overlay layer rather than into the screen, so it stays
- * in the bottom-right corner instead of scrolling away with the calendar.
+ * in the bottom-right corner instead of scrolling away with the calendar. It
+ * says what it does: a bare "+" on the teal was easy to miss.
  */
 export function overlay() {
   if (S.tab !== 'classes' || S.sub) return '';
-  return `<button type="button" class="fab" data-a="class.add"
-    aria-label="${esc(t('add_class'))}">+</button>`;
+  return `<button type="button" class="fab" data-a="class.add"><span aria-hidden="true">+</span>${esc(
+    t('add_class'),
+  )}</button>`;
 }
 
 /* ---------------------------------------------- all classes & one class -- */
@@ -485,17 +487,24 @@ export function classDetail() {
        )}</b>
        ${muted(placeOf(cls))}`,
     )}
-    ${label(t('students'))}
-    ${enrolled
-      .map((s) =>
-        card(
-          `<div class="row">${avatar(s.name)}<b class="g">${esc(s.name)}</b>${
-            Number(s.amount_due) > 0 ? pill(R.money(s.amount_due), 'p') : ''
-          }</div>`,
-          { act: 'student.open', arg: s.id, cls: 'tap' },
-        ),
-      )
-      .join('')}
+    <div class="row sp mt">
+      <b class="h3">${esc(`${t('students')} · ${enrolled.length}`)}</b>
+      ${button(`+ ${t('add_students')}`, { act: 'roster.open', arg: cls.id, cls: 'sm' })}
+    </div>
+    ${
+      enrolled.length
+        ? enrolled
+            .map((s) =>
+              card(
+                `<div class="row">${avatar(s.name)}<div class="g"><b>${esc(s.name)}</b>${muted(
+                  `${t('grade')} ${s.grade ?? '–'}`,
+                )}</div>${feePill(s)}</div>`,
+                { act: 'student.open', arg: s.id, cls: 'tap' },
+              ),
+            )
+            .join('')
+        : emptyState(t('class_empty'), '🧑‍🎓')
+    }
     ${
       (cls.skips || []).length
         ? card(`${label(t('skip_this_day'))}${(cls.skips || [])
@@ -711,13 +720,19 @@ function localTime(iso) {
 
 /* ---------------------------------------------------------- 4 · students -- */
 
+/** The fee pill: the amount owed, Paid, or Unpaid - never Paid by default. */
+function feePill(s) {
+  const state = R.feeState(s);
+  if (state === 'owes') return pill(R.money(s.amount_due), 'p');
+  return state === 'paid' ? pill(t('paid'), 'g') : pill(t('unpaid'), 'p');
+}
+
 function studentRow(s) {
-  const due = Number(s.amount_due);
   return card(
     `<div class="row">${avatar(s.name)}
       <div class="g"><b>${esc(s.name)}</b>${s.status === 'pending' ? ` ${pill(t('new_signup'), 't')}` : ''}
       ${muted(`${t('grade')} ${s.grade ?? '–'} · ${s.subject || (s.wanted_subjects || []).join(', ') || '—'}`)}</div>
-      ${due > 0 ? pill(R.money(due), 'p') : s.status === 'pending' ? pill('—') : pill(t('paid'), 'g')}</div>`,
+      ${feePill(s)}</div>`,
     { act: 'student.open', arg: s.id, cls: 'tap' },
   );
 }
@@ -806,12 +821,21 @@ export function studentDetail() {
     }
 
     ${card(
-      `${label(t('fees'))}
-       ${big(R.money(due), `color:${due > 0 ? 'var(--pt)' : 'var(--gt)'}`)}
+      `<div class="row sp">${label(t('fees'))}${feePill(s)}</div>
+       ${big(R.money(due), `color:${{ owes: 'var(--pt)', paid: 'var(--gt)', unpaid: 'var(--mu)' }[R.feeState(s)]}`)}
        ${muted(
          due > 0
            ? t('classes_days_late', { classes: s.pending_classes, days: s.days_late })
            : t('classes_x_fee', { classes: 0, fee: R.money(s.fee_per_class) }),
+       )}
+       ${label(t('payment_status'))}
+       ${segmented(
+         [
+           { value: `${s.id}|unpaid`, label: t('unpaid') },
+           { value: `${s.id}|paid`, label: t('paid') },
+         ],
+         `${s.id}|${R.feeState(s) === 'paid' ? 'paid' : 'unpaid'}`,
+         'fees.status',
        )}
        ${
          due > 0
@@ -911,6 +935,8 @@ export function fees() {
   const owing = students()
     .filter((s) => Number(s.amount_due) > 0)
     .sort((a, b) => b.days_late - a.days_late || Number(b.amount_due) - Number(a.amount_due));
+  // Nothing on the ledger, but nobody has said they paid either.
+  const unpaid = students().filter((s) => R.feeState(s) === 'unpaid');
   const outstanding = owing.reduce((a, s) => a + Number(s.amount_due), 0);
   const month = S.today.slice(0, 7);
   const collected = Number((S.data.months || []).find((m) => m.month === month)?.collected || 0);
@@ -949,7 +975,25 @@ export function fees() {
               ),
             )
             .join('')
-        : emptyState(t('everyone_paid'), '🎉')
+        : unpaid.length
+          ? ''
+          : emptyState(t('everyone_paid'), '🎉')
+    }
+    ${
+      unpaid.length
+        ? `<b class="h3">${esc(t('marked_unpaid_list'))}</b>
+           ${unpaid
+             .map((s) =>
+               card(
+                 `<div class="row">${avatar(s.name)}
+                   <div class="g"><b>${esc(s.name)}</b>${muted(
+                     `${t('grade')} ${s.grade ?? '–'} · ${R.money(s.fee_per_class)}`,
+                   )}</div>
+                   ${button(t('mark_paid'), { act: 'fees.status', arg: `${s.id}|paid`, cls: 'sm gr' })}</div>`,
+               ),
+             )
+             .join('')}`
+        : ''
     }
   `;
 }

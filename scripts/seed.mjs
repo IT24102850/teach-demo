@@ -395,6 +395,15 @@ async function main() {
   await db.insert('payments', payments, { returning: 'minimal' });
   console.log(`· payments: ${payments.length}`);
 
+  // Paid / Unpaid is the teacher's word, not the ledger's: a student whose
+  // every class was paid for is marked Paid, as the teacher would have.
+  const settled = inserted.filter(
+    (s) => !UNPAID_CLASSES[s.name] && payments.some((p) => p.student_id === s.id),
+  );
+  if (settled.length) {
+    await db.update('students', { fee_status: 'paid' }, { id: db.inList(settled.map((s) => s.id)) });
+  }
+
   /* 7 · a slip waiting for the teacher to confirm (rule 7.2.6) */
   await db.update(
     'students',

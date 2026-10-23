@@ -38,6 +38,7 @@ import {
   label,
   muted,
   openSheet,
+  pill,
   receipt,
   segmented,
   selectField,
@@ -46,7 +47,10 @@ import {
   telField,
   telValue,
   toast,
+  centerWheels,
+  wheel,
   wireTelFields,
+  wireWheels,
 } from '../ui.js';
 
 const val = (id) => document.getElementById(id)?.value ?? '';
@@ -306,65 +310,80 @@ function classSheet() {
 
 /* --------------------------------------- point 13 · the time slot sheet -- */
 
-function timeSheet() {
-  const draft = classDraft();
+/**
+ * Start and end, each on its own wheels - the iPhone alarm picker.
+ *
+ * The two times live here while the sheet is open, rather than as a start and
+ * a length on classForm, so an end before the start can sit on screen and be
+ * fixed instead of turning into a negative length.
+ */
+const timeForm = { start: '16:00', end: '17:30' };
+
+const timeSpan = () => R.spanMinutes(timeForm.start, timeForm.end);
+
+/** The class as it would be with the wheels where they are now. */
+const wheelDraft = () => ({
+  ...classDraft(),
+  start_time: timeForm.start,
+  duration_hours: Math.max(0, timeSpan()) / 60,
+});
+
+/** Which row a wheel should show: "start:h" -> 4, "end:p" -> "PM". */
+function wheelValue(which, part) {
+  const p = R.clockParts(timeForm[which]);
+  if (part === 'h') return p.h;
+  if (part === 'p') return p.pm ? 'PM' : 'AM';
+  // An older class may start at 4:07; the nearest five is the row lit up.
+  return R.WHEEL_MINUTES.reduce((best, m) => (Math.abs(m - p.m) < Math.abs(best - p.m) ? m : best));
+}
+
+function clockWheels(which) {
+  return `<div class="wheels">
+    ${wheel(
+      `${which}:h`,
+      R.WHEEL_HOURS.map((h) => ({ value: h, label: String(h) })),
+      wheelValue(which, 'h'),
+      'time.wheel',
+      'Hour',
+    )}
+    ${wheel(
+      `${which}:m`,
+      R.WHEEL_MINUTES.map((m) => ({ value: m, label: String(m).padStart(2, '0') })),
+      wheelValue(which, 'm'),
+      'time.wheel',
+      'Minute',
+    )}
+    ${wheel(
+      `${which}:p`,
+      [
+        { value: 'AM', label: 'AM' },
+        { value: 'PM', label: 'PM' },
+      ],
+      wheelValue(which, 'p'),
+      'time.wheel',
+      'AM / PM',
+    )}
+  </div>`;
+}
+
+/** Everything under the wheels that changes as they turn. */
+function timeLive() {
+  const span = timeSpan();
+  if (span <= 0) {
+    return `${card(`<b>⚠ ${esc(t('end_after_start'))}</b>`, { cls: 'warn' })}
+      ${button(t('done'), { act: 'time.done', cls: 'wide' })}`;
+  }
+  const draft = wheelDraft();
   // Shown whether or not it has been accepted, for the same reason as above.
   const clash = R.findClash(classes(), draft);
   const travel = clash ? null : R.travelWarning(classes(), draft);
-  const custom = !R.DURATION_CHOICES.includes(Number(classForm.duration_hours));
-  const known = R.startChoices().includes(R.hhmm(classForm.start_time));
 
-  return openSheet(`
-    ${sheetTitle(
-      `${t('choose_time')} · ${
-        draft.once_date
-          ? R.dateTitle(draft.once_date, S.lang)
-          : draft.days.map((d) => R.dayShort(d, S.lang)).join(', ') || t('days')
-      }`,
-    )}
-
-    ${label(t('start_at'))}
-    <div class="chips scroll">${R.startChoices()
-      .map((time) =>
-        chip(R.clock12(time), {
-          act: 'time.start',
-          arg: time,
-          on: R.hhmm(classForm.start_time) === time,
-        }),
-      )
-      .join('')}</div>
-    ${
-      known
-        ? `<button type="button" class="link-btn" data-a="time.other">${esc(t('other_time'))}</button>`
-        : field('c-start', t('other_time'), { type: 'time', value: R.hhmm(classForm.start_time) })
-    }
-
-    ${label(t('how_long'))}
-    <div class="chips">${R.DURATION_CHOICES.map((h) =>
-      chip(t('hours_short', { n: h }), {
-        act: 'time.dur',
-        arg: String(h),
-        on: !custom && Number(classForm.duration_hours) === h,
-      }),
-    ).join('')}
-    ${chip(t('custom'), { act: 'time.custom', on: custom })}</div>
-    ${
-      custom
-        ? field('c-dur', t('hours'), {
-            type: 'number',
-            step: '0.25',
-            min: 0.25,
-            value: String(classForm.duration_hours),
-          })
-        : ''
-    }
-
+  return `
     ${label(t('class_runs'))}
     <div class="slotline">
-      <b>${esc(R.slotLabel(classForm.start_time, classForm.duration_hours))}</b>
-      <span class="pill t">${esc(R.durationLabel(classForm.duration_hours))}</span>
+      <b>${esc(R.slotLabel(timeForm.start, span / 60))}</b>
+      <span class="pill t">${esc(R.durationLabel(span / 60))}</span>
     </div>
-
     ${
       clash
         ? card(
@@ -381,12 +400,191 @@ function timeSheet() {
           ? card(muted(t('travel_warning', { title: travel.title })), { cls: 'warn' })
           : ''
     }
-
     ${button(clash && !classForm.allowClash ? t('save_anyway') : t('done'), {
       act: 'time.done',
       cls: clash ? 'd wide' : 'wide',
-    })}
+    })}`;
+}
+
+function timeSheet() {
+  const draft = classDraft();
+  openSheet(`
+    ${sheetTitle(
+      `${t('choose_time')} · ${
+        draft.once_date
+          ? R.dateTitle(draft.once_date, S.lang)
+          : draft.days.map((d) => R.dayShort(d, S.lang)).join(', ') || t('days')
+      }`,
+    )}
+    ${label(t('start_at'))}
+    ${clockWheels('start')}
+    ${label(t('end_at'))}
+    ${clockWheels('end')}
+    <div id="time-live">${timeLive()}</div>
   `);
+  wireWheels(document.querySelector('#sheet .sheet-panel'), (arg) => {
+    if (setWheel(arg)) refreshTime();
+  });
+}
+
+/** Open the time sheet on the class's current start and end. */
+function openTimeSheet() {
+  timeForm.start = R.hhmm(classForm.start_time);
+  timeForm.end = R.endTime(classForm.start_time, classForm.duration_hours);
+  timeSheet();
+}
+
+/** Turn one wheel. Returns false when it already showed that row. */
+function setWheel(arg) {
+  const [which, part, value] = String(arg).split(':');
+  const key = which === 'end' ? 'end' : 'start';
+  const parts = R.clockParts(timeForm[key]);
+  if (part === 'h') parts.h = Number(value);
+  else if (part === 'm') parts.m = Number(value);
+  else if (part === 'p') parts.pm = value === 'PM';
+  const next = R.fromClockParts(parts);
+  if (next === timeForm[key]) return false;
+
+  if (key === 'start') {
+    // As a calendar does: moving the start carries the end with it, so the
+    // class keeps its length until the end is moved on purpose.
+    const span = timeSpan();
+    timeForm.start = next;
+    if (span > 0) timeForm.end = R.fromMinutes(R.minutesOf(next) + span);
+  } else {
+    timeForm.end = next;
+  }
+  classForm.allowClash = false;
+  return true;
+}
+
+/**
+ * Redraw only what the wheels changed. Redrawing the whole sheet would throw
+ * away the scroll position of a wheel that is still being flicked.
+ */
+function refreshTime() {
+  const live = document.getElementById('time-live');
+  const panel = document.querySelector('#sheet .sheet-panel');
+  if (!live || !panel) return timeSheet();
+  live.innerHTML = timeLive();
+  for (const column of panel.querySelectorAll('.wheel[data-wheel]')) {
+    const [which, part] = column.dataset.wheel.split(':');
+    const want = `${column.dataset.wheel}:${wheelValue(which, part)}`;
+    for (const row of column.querySelectorAll('.wheel-i')) {
+      row.classList.toggle('on', row.dataset.i === want);
+      row.setAttribute('aria-selected', String(row.dataset.i === want));
+    }
+  }
+  centerWheels(panel);
+}
+
+/* =========================================================================
+   Add students: fill a class from everyone on the list, many at a time.
+   ========================================================================= */
+
+/**
+ * The open Add students sheet. `picked` starts as the class's own students,
+ * so the sheet manages the whole roster: tick to add, untick to take out.
+ */
+const rosterForm = { classId: null, grade: 'all', q: '', picked: [] };
+
+/** Everyone who can be put in a class: confirmed students and new sign-ups. */
+const rosterPool = () => students().filter((s) => s.status !== 'archived');
+
+function openRoster(classId) {
+  const cls = classById(classId);
+  if (!cls) return;
+  const pool = rosterPool();
+  // Start on the class's own grade when anyone is in it - a Grade 10 class
+  // opens on the Grade 10 students, which is almost always who is wanted.
+  const grade = cls.grade && pool.some((s) => Number(s.grade) === Number(cls.grade)) ? Number(cls.grade) : 'all';
+  Object.assign(rosterForm, { classId, grade, q: '', picked: [...(cls.student_ids || [])] });
+  rosterSheet();
+}
+
+const rosterSingle = () => R.classKind(classById(rosterForm.classId)) === 'individual';
+
+function rosterRows() {
+  const shown = R.filterRoster(rosterPool(), rosterForm);
+  if (!shown.length) return muted(t('no_match'));
+  const enrolled = classById(rosterForm.classId)?.student_ids || [];
+  return shown
+    .map((s) => {
+      const on = rosterForm.picked.includes(s.id);
+      return `<button type="button" class="roster-i${on ? ' on' : ''}" role="checkbox" aria-checked="${on}"
+        data-a="roster.toggle" data-i="${esc(s.id)}">
+        <i class="roster-box" aria-hidden="true">✓</i>
+        <span class="g"><b>${esc(s.name)}</b>
+          <em>${esc(
+            [`${t('grade')} ${s.grade ?? '–'}`, s.subject, enrolled.includes(s.id) ? t('in_class') : '']
+              .filter(Boolean)
+              .join(' · '),
+          )}</em></span>
+        ${s.status === 'pending' ? pill(t('new_signup'), 't') : ''}
+      </button>`;
+    })
+    .join('');
+}
+
+/** The Select all line and the Save button, which both count the ticks. */
+function rosterFoot() {
+  const shown = R.filterRoster(rosterPool(), rosterForm);
+  const allOn = shown.length > 0 && shown.every((s) => rosterForm.picked.includes(s.id));
+  return `
+    ${
+      rosterSingle() || !shown.length
+        ? ''
+        : `<button type="button" class="link-btn" data-a="roster.all">${esc(
+            allOn ? t('clear_shown', { n: shown.length }) : t('select_shown', { n: shown.length }),
+          )}</button>`
+    }
+    <div class="row gap" style="margin-top:12px">
+      ${button(t('cancel'), { act: 'sheet.close', cls: 'o' })}
+      ${actionButton(t('save_n_students', { n: rosterForm.picked.length }), { act: 'roster.save' })}
+    </div>`;
+}
+
+function rosterSheet() {
+  const cls = classById(rosterForm.classId);
+  if (!cls) return closeSheet();
+  const grades = R.gradesOf(rosterPool());
+
+  openSheet(`
+    ${sheetTitle(t('add_students'))}
+    ${muted(rosterSingle() ? `${cls.title} · ${t('individual_one_student')}` : cls.title)}
+
+    <div class="chips scroll mt-s">
+      ${chip(t('all_grades'), { act: 'roster.grade', arg: 'all', on: rosterForm.grade === 'all' })}
+      ${grades
+        .map((g) =>
+          chip(`${t('grade')} ${g}`, { act: 'roster.grade', arg: String(g), on: rosterForm.grade === g }),
+        )
+        .join('')}
+    </div>
+    <input id="roster-q" class="search" type="search" placeholder="${esc(t('search_students'))}"
+      value="${esc(rosterForm.q)}" aria-label="${esc(t('search_students'))}">
+
+    <div id="roster-list" class="roster">${rosterRows()}</div>
+    <div id="roster-foot">${rosterFoot()}</div>
+  `);
+
+  const search = document.getElementById('roster-q');
+  if (search && !search.dataset.wired) {
+    search.dataset.wired = '1';
+    search.addEventListener('input', () => {
+      rosterForm.q = search.value;
+      refreshRoster();
+    });
+  }
+}
+
+/** Redraw the list and the count, leaving the search box and the scroll alone. */
+function refreshRoster() {
+  const list = document.getElementById('roster-list');
+  const foot = document.getElementById('roster-foot');
+  if (!list || !foot) return rosterSheet();
+  list.innerHTML = rosterRows();
+  foot.innerHTML = rosterFoot();
 }
 
 /* =========================================================================
@@ -840,31 +1038,17 @@ export const ACTIONS = {
   /* ---- the time sheet (point 13) ---- */
   'time.open': () => {
     captureClassForm();
-    timeSheet();
+    openTimeSheet();
   },
-  'time.start': (time) => {
-    classForm.start_time = time;
-    classForm.allowClash = false;
-    timeSheet();
-  },
-  'time.other': () => {
-    classForm.start_time = '16:15';
-    timeSheet();
-  },
-  'time.dur': (hours) => {
-    classForm.duration_hours = Number(hours);
-    classForm.allowClash = false;
-    timeSheet();
-  },
-  'time.custom': () => {
-    classForm.duration_hours = 1.25;
-    timeSheet();
+  /** A tapped row on a wheel; a flicked one arrives through wireWheels. */
+  'time.wheel': (arg) => {
+    if (setWheel(arg)) refreshTime();
   },
   'time.done': () => {
-    const start = val('c-start');
-    const dur = Number(val('c-dur'));
-    if (start) classForm.start_time = start;
-    if (dur > 0) classForm.duration_hours = dur;
+    const span = timeSpan();
+    if (span <= 0) return toast(t('end_after_start'), 'bad');
+    classForm.start_time = timeForm.start;
+    classForm.duration_hours = span / 60;
     // "Save anyway" on a clash: the teacher has seen the warning and meant it.
     if (R.findClash(classes(), classDraft())) classForm.allowClash = true;
     classSheet();
@@ -910,13 +1094,21 @@ export const ACTIONS = {
       S.cal.date = draft.once_date || firstDateOf(result.class_id || classForm.id) || S.today;
       S.cal.mode = 'day';
       goTab('classes');
+      // A group class saved empty is the "create it first" path: go straight
+      // to the class and open Add students, which is the next thing to do.
+      if (!classForm.id && result.class_id && !draft.student_ids.length) {
+        goSub('class', { id: result.class_id });
+        ctx.render();
+        openRoster(result.class_id);
+        return;
+      }
       ctx.render();
       toast(classForm.id ? t('saved') : t('class_added', { title: result.title || '' }));
     } catch (err) {
       // Point 13: a clash comes back as 409 and the sheet offers Save anyway.
       if (err.status === 409) {
         classForm.allowClash = true;
-        timeSheet();
+        openTimeSheet();
         return;
       }
       toast(err.message, 'bad');
@@ -1064,6 +1256,50 @@ export const ACTIONS = {
     const [id, date] = String(arg).split('|');
     await api.teacherDo('class.unskip', { class_id: id, date });
     await reload(ctx);
+  },
+
+  /* ---- Add students to a class ---- */
+  'roster.open': (classId) => openRoster(classId),
+  'roster.grade': (grade) => {
+    rosterForm.grade = grade === 'all' ? 'all' : Number(grade);
+    rosterSheet();
+  },
+  'roster.toggle': (id) => {
+    const at = rosterForm.picked.indexOf(id);
+    if (at >= 0) rosterForm.picked.splice(at, 1);
+    // An individual class has one student, so a tick moves rather than adds.
+    else if (rosterSingle()) rosterForm.picked = [id];
+    else rosterForm.picked.push(id);
+    refreshRoster();
+  },
+  /** Tick everyone the filter shows, or untick them if they all are already. */
+  'roster.all': () => {
+    const shown = R.filterRoster(rosterPool(), rosterForm).map((s) => s.id);
+    const allOn = shown.every((id) => rosterForm.picked.includes(id));
+    rosterForm.picked = allOn
+      ? rosterForm.picked.filter((id) => !shown.includes(id))
+      : [...new Set([...rosterForm.picked, ...shown])];
+    refreshRoster();
+  },
+  'roster.save': async (_a, _el, ctx) => {
+    if (rosterSingle() && rosterForm.picked.length !== 1) {
+      return toast(t('individual_one_student'), 'bad');
+    }
+    try {
+      const result = await api.teacherDo('class.students', {
+        class_id: rosterForm.classId,
+        student_ids: rosterForm.picked,
+      });
+      closeSheet();
+      await reload(ctx);
+      toast(
+        result.added || result.removed
+          ? t('roster_saved', { added: result.added, removed: result.removed })
+          : t('saved'),
+      );
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
   },
 
   /* ---- attendance: Scheduled -> In progress -> Ended (point 10) ---- */
@@ -1323,6 +1559,15 @@ export const ACTIONS = {
       ${field('s-parent', t('parent_name'))}
       ${telField('s-phone', t('parent_whatsapp'))}
       ${field('s-fee', t('fee_per_class'), { type: 'number', min: 0, inputmode: 'numeric' })}
+      ${selectField(
+        's-feestatus',
+        t('payment_status'),
+        [
+          { value: 'unpaid', label: t('unpaid') },
+          { value: 'paid', label: t('paid') },
+        ],
+        'unpaid',
+      )}
       ${sheetActions('student.save', t('save'))}
       ${button(t('send_signup_link'), { act: 'invite.open', cls: 'gh wide mt' })}
     `);
@@ -1343,6 +1588,7 @@ export const ACTIONS = {
         parent_name: val('s-parent'),
         parent_phone: phone,
         fee_per_class: numVal('s-fee'),
+        fee_status: val('s-feestatus') === 'paid' ? 'paid' : 'unpaid',
       });
       closeSheet();
       await reload(ctx);
@@ -1390,6 +1636,25 @@ export const ACTIONS = {
   },
 
   /* ---- fees (point 11) ---- */
+
+  /**
+   * Paid / Unpaid, set by hand once the teacher has the money. With classes
+   * still owing on the ledger, "Paid" means recording that payment, so it
+   * opens the payment sheet instead of hiding the balance.
+   */
+  'fees.status': async (arg, _el, ctx) => {
+    const [id, status] = String(arg).split('|');
+    const student = studentById(id);
+    if (!student) return;
+    if (status === 'paid' && Number(student.amount_due) > 0) return ACTIONS['fees.pay'](id);
+    try {
+      await api.teacherDo('student.fee_status', { student_id: id, fee_status: status });
+      await reload(ctx);
+      toast(status === 'paid' ? t('marked_paid') : t('marked_unpaid'));
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+  },
   'fees.pay': (id) => {
     const student = studentById(id);
     if (!student) return;

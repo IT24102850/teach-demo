@@ -246,11 +246,11 @@ export const classKind = (cls) =>
  */
 export function classDraftError(draft) {
   const count = (draft.student_ids || []).length;
-  if (!count) return 'Pick at least one student';
+  // A group class may start empty: students are added from the class screen.
+  if (draft.kind !== 'group' && !count) return 'Pick at least one student';
   if (draft.kind === 'individual' && count !== 1) {
     return 'An individual class has exactly one student';
   }
-  if (draft.kind === 'group' && count < 2) return 'A group class needs two or more students';
   if (draft.kind === 'group') {
     if (!VENUE_TYPES.includes(draft.venue_type)) return 'Say where the class is';
     if (draft.venue_type === 'institute' && !String(draft.venue_name || '').trim()) {

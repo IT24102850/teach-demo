@@ -136,7 +136,15 @@ function feesCard({ compact = false } = {}) {
   const c = child();
   const due = Number(c.amount_due || 0);
   if (!due) {
-    return compact ? '' : card(`${label(t('amount_due'))}${big(R.money(0), 'color:var(--gt)')}${muted(t('paid'))}`);
+    // "Paid" only once the teacher has said so; nothing on the ledger yet is not the same thing.
+    const paid = R.feeState(c) === 'paid';
+    return compact
+      ? ''
+      : card(
+          `${label(t('amount_due'))}${big(R.money(0), `color:${paid ? 'var(--gt)' : 'var(--mu)'}`)}${
+            paid ? muted(t('paid')) : ''
+          }`,
+        );
   }
   const action = c.slip_sent
     ? `<p class="mu mt-s">${esc(t('slip_waiting'))}</p>`

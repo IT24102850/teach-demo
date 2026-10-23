@@ -159,6 +159,14 @@ plus `start_class()` and `reverse_payment()`, a `photos` bucket, and a wider
 a class with one student becomes `individual`, everything else `group`, and
 old payments are numbered in the order they were taken.
 
+`supabase/migrations/006-fee-status.sql` adds `students.fee_status` — Paid /
+Unpaid as the teacher sets it, so a new student no longer shows as Paid just
+because nothing is on the ledger yet. Apply it with `npm run db:push`, not on
+its own: `v_students` has to be rebuilt to carry the column, and the app reads
+it on every load, so **push the schema before deploying this code**. On the run
+that adds it, students whose ledger is settled by a real payment start as Paid;
+everyone else starts Unpaid.
+
 **Run it before you deploy the new code.** The app reads these columns, so the
 old schema with the new code shows blank venues and a broken Paid button.
 `npm run db:verify` names anything that is missing.

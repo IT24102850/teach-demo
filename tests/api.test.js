@@ -436,7 +436,9 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (method === 'DELETE') {
     DB[table] = DB[table].filter((row) => !matches(row, params));
-    return json(204, []);
+    // As PostgREST does with return=minimal: 204 and no body. (A 204 with a
+    // body is refused by Response itself.)
+    return new Response(null, { status: 204 });
   }
   return json(405, { message: 'not allowed' });
 };
@@ -1535,6 +1537,67 @@ test('adding a student by hand is held to the +94 rule', async () => {
   assert.equal(made.call_name, 'New', 'the short name is suggested');
 });
 
+/* ================================================== the fee status by hand */
+
+test('a new student starts Unpaid unless the teacher picks Paid', async () => {
+  const cookie = await signInTeacher();
+  await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=student.create',
+    cookie,
+    body: { name: 'Not Yet', parent_phone: '077 123 4500', fee_per_class: 1000 },
+  });
+  await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=student.create',
+    cookie,
+    body: { name: 'Paid Up', parent_phone: '077 123 4501', fee_per_class: 1000, fee_status: 'paid' },
+  });
+  assert.equal(DB.students.find((x) => x.name === 'Not Yet').fee_status, 'unpaid');
+  assert.equal(DB.students.find((x) => x.name === 'Paid Up').fee_status, 'paid');
+});
+
+test('Paid / Unpaid is set by hand, and Paid is refused while classes are owing', async () => {
+  const cookie = await signInTeacher();
+  const set = (id, status) =>
+    call(teacherApi, { method: 'POST', url: '/api/teacher?r=student.fee_status', cookie, body: { student_id: id, fee_status: status } });
+
+  const amaya = await set(AMAYA, 'paid');
+  assert.equal(amaya.statusCode, 200, amaya.bodyText);
+  assert.equal(DB.students.find((x) => x.id === AMAYA).fee_status, 'paid');
+  await set(AMAYA, 'unpaid');
+  assert.equal(DB.students.find((x) => x.id === AMAYA).fee_status, 'unpaid');
+
+  const kasun = await set(KASUN, 'paid');
+  assert.equal(kasun.statusCode, 400, 'LKR 6,000 is owing: that is a payment, not a tick');
+  assert.match(kasun.json.error, /Record the payment/);
+
+  const nonsense = await set(AMAYA, 'maybe');
+  assert.equal(nonsense.statusCode, 400);
+});
+
+test('a payment that clears the balance marks the student Paid, and Undo takes it back', async () => {
+  const cookie = await signInTeacher();
+  const paid = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.record',
+    cookie,
+    body: { student_id: KASUN, method: 'Cash', send_receipt: false },
+  });
+  assert.equal(paid.statusCode, 200, paid.bodyText);
+  assert.equal(paid.json.balance, 0);
+  assert.equal(DB.students.find((x) => x.id === KASUN).fee_status, 'paid');
+
+  const undone = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=payment.reverse',
+    cookie,
+    body: { payment_id: paid.json.payment_id },
+  });
+  assert.equal(undone.statusCode, 200, undone.bodyText);
+  assert.equal(DB.students.find((x) => x.id === KASUN).fee_status, 'unpaid');
+});
+
 test('editing a number is held to the same rule', async () => {
   const cookie = await signInTeacher();
   const bad = await call(teacherApi, {
@@ -1798,7 +1861,7 @@ test('adding a mark validates the score and tells the parent', async () => {
 test('creating a class needs a student and a day, and names itself', async () => {
   const cookie = await signInTeacher();
 
-  const noStudents = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=class.create', cookie, body: { subject: 'Maths', days: [0], start_time: '16:00', student_ids: [] } });
+  const noStudents = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=class.create', cookie, body: { kind: 'individual', subject: 'Maths', days: [0], start_time: '16:00', student_ids: [] } });
   assert.equal(noStudents.statusCode, 400);
   assert.match(noStudents.json.error, /at least one student/);
 
@@ -1828,16 +1891,69 @@ test('an individual class cannot be saved with two students', async () => {
   assert.match(res.json.error, /exactly one student/);
 });
 
-test('a group class cannot be saved with one student', async () => {
+test('a group class can be created empty, then filled from Add students', async () => {
   const cookie = await signInTeacher();
-  const res = await call(teacherApi, {
+  const made = await call(teacherApi, {
     method: 'POST',
     url: '/api/teacher?r=class.create',
     cookie,
-    body: { kind: 'group', venue_type: 'institute', venue_name: 'Bright Minds', area: 'Nugegoda', subject: 'Maths', days: [1], start_time: '18:00', duration_hours: 1, student_ids: [KASUN] },
+    body: { kind: 'group', venue_type: 'institute', venue_name: 'Bright Minds', area: 'Nugegoda', subject: 'Maths', grade: 10, days: [1], start_time: '18:00', duration_hours: 1, student_ids: [] },
+  });
+  assert.equal(made.statusCode, 200, made.bodyText);
+  assert.equal(made.json.title, 'Grade 10 Maths');
+  assert.equal(DB.class_students.filter((l) => l.class_id === made.json.class_id).length, 0);
+
+  // The fake PostgREST does not embed class_students on a new row, so give
+  // it the (empty) roster the real one would.
+  DB.classes.find((c) => c.id === made.json.class_id).class_students = [];
+  const filled = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.students',
+    cookie,
+    body: { class_id: made.json.class_id, student_ids: [KASUN, AMAYA, KASUN] },
+  });
+  assert.equal(filled.statusCode, 200, filled.bodyText);
+  assert.deepEqual(filled.json, { added: 2, removed: 0, count: 2 }, 'a repeated id is counted once');
+  assert.equal(DB.class_students.filter((l) => l.class_id === made.json.class_id).length, 2);
+});
+
+test('Add students sets the whole roster: new ones in, unticked ones out', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.students',
+    cookie,
+    body: { class_id: CLASS, student_ids: [KASUN, OTHER_CHILD] },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.deepEqual(res.json, { added: 1, removed: 1, count: 2 });
+  const roster = DB.class_students.filter((l) => l.class_id === CLASS).map((l) => l.student_id).sort();
+  assert.deepEqual(roster, [KASUN, OTHER_CHILD].sort(), 'Amaya was taken out, the new student put in');
+});
+
+test('Add students refuses a student who belongs to another teacher', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.students',
+    cookie,
+    body: { class_id: CLASS, student_ids: [KASUN, 'ffffffff-ffff-4fff-8fff-ffffffffffff'] },
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(DB.class_students.filter((l) => l.class_id === CLASS).length, 2, 'nothing changed');
+});
+
+test('Add students keeps an individual class to one student', async () => {
+  const cookie = await signInTeacher();
+  DB.classes[0].kind = 'individual';
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=class.students',
+    cookie,
+    body: { class_id: CLASS, student_ids: [KASUN, AMAYA] },
   });
   assert.equal(res.statusCode, 400);
-  assert.match(res.json.error, /two or more students/);
+  assert.match(res.json.error, /exactly one student/);
 });
 
 test('a group class at an institute needs the institute name', async () => {
