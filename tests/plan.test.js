@@ -1010,3 +1010,22 @@ test('drag: press and hold, so a scroll is never a reschedule', () => {
   assert.match(teacher, /function suppressNextClick\(\)/);
   assert.match(CSS, /\.blk\[data-move\]\s*\{[\s\S]*?touch-action: none/);
 });
+
+/* =========================================================================
+   The teacher's name: Mr before, Sir after
+   ========================================================================= */
+
+test('Mr, Mrs, Dr go before the name; Sir and Madam after', () => {
+  for (const R of [CR, SR]) {
+    assert.equal(R.fullName({ name: 'Shehan Asher', title: 'Mr' }), 'Mr Shehan Asher');
+    assert.equal(R.fullName({ name: 'Dilini Perera', title: 'Mrs' }), 'Mrs Dilini Perera');
+    assert.equal(R.fullName({ name: 'Kamal', title: 'Dr' }), 'Dr Kamal');
+    assert.equal(R.fullName({ name: 'Nimal', title: 'Sir' }), 'Nimal Sir');
+    assert.equal(R.fullName({ name: 'Kumari', title: 'Madam' }), 'Kumari Madam');
+    assert.equal(R.fullName({ name: 'Nimal', title: '' }), 'Nimal');
+  }
+  assert.equal(
+    message('plusInvite', { teacher: SR.fullName({ name: 'Shehan Asher', title: 'Mr' }), class: '', link: 'L' }, 'en'),
+    "Hi! Mr Shehan Asher's classes now use Plus. Join to see attendance, marks and class updates: L",
+  );
+});

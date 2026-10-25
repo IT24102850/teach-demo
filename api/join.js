@@ -16,7 +16,7 @@
 
 import * as db from './_lib/db.js';
 import { bad, clientIp, guard, ok, query, readJson, resource } from './_lib/http.js';
-import { toLkMobile } from './_lib/rules.js';
+import { fullName, toLkMobile } from './_lib/rules.js';
 
 const MAX_PER_HOUR = Number(process.env.JOIN_MAX_PER_HOUR || 5);
 
@@ -163,6 +163,6 @@ export default guard(async (req, res) => {
 
   return ok(res, {
     saved: true,
-    teacher: `${teacher.name}${teacher.title ? ` ${teacher.title}` : ''}`,
+    teacher: fullName(teacher),
   });
 });

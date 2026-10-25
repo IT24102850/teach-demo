@@ -647,7 +647,7 @@ function shrinkImage(file, maxSide = 1400, quality = 0.82) {
  */
 export function locked() {
   const data = S.data || {};
-  const teacher = `${data.teacher?.name || ''}${data.teacher?.title ? ` ${data.teacher.title}` : ''}`;
+  const teacher = R.fullName(data.teacher);
   return `
     <div class="locked">
       <div class="locked-mark" aria-hidden="true">PLUS</div>

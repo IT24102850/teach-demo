@@ -194,7 +194,7 @@ const mustClass = async (tid, id) => {
   return c;
 };
 
-const teacherName = (t) => `${t.name}${t.title ? ` ${t.title}` : ''}`;
+const teacherName = R.fullName;
 
 /* Paid / Unpaid: set by the teacher, never assumed from a zero balance. */
 const FEE_STATUSES = ['unpaid', 'paid'];

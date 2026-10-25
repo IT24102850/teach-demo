@@ -50,7 +50,7 @@ async function feeReminders(teachers) {
   for (const teacher of teachers) {
     if (!teacher.auto_reminders) continue;
     const after = Number(teacher.remind_after_days) || 14;
-    const name = `${teacher.name}${teacher.title ? ` ${teacher.title}` : ''}`;
+    const name = R.fullName(teacher);
 
     const students = await db.select('v_students', {
       select: 'id,name,parent_phone,amount_due,pending_classes,days_late,last_reminded_at',
@@ -99,7 +99,7 @@ async function classReminders(teachers) {
   let sent = 0;
 
   for (const teacher of teachers) {
-    const name = `${teacher.name}${teacher.title ? ` ${teacher.title}` : ''}`;
+    const name = R.fullName(teacher);
     const classes = await db.select('classes', {
       select: 'id,subject,title,place,days,start_time,start_date,once_date,active,class_students(student_id),class_exceptions(skip_date)',
       teacher_id: `eq.${teacher.id}`,

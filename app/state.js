@@ -5,7 +5,7 @@
  */
 
 import { setLang } from './i18n.js';
-import { todayLocal } from './rules.js';
+import { fullName, todayLocal } from './rules.js';
 
 const PREFS_KEY = 'plus.prefs';
 
@@ -84,7 +84,7 @@ export const classById = (id) => classes().find((c) => c.id === id) || null;
 export const activeChild = () => S.data?.child || null;
 
 export const teacherName = () =>
-  S.teacher ? `${S.teacher.name}${S.teacher.title ? ` ${S.teacher.title}` : ''}` : '';
+  S.teacher ? fullName(S.teacher) : '';
 
 /* ---------------------------------------------------------- navigation --- */
 

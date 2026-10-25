@@ -15,7 +15,7 @@ import { api } from './api.js';
 import { t, setLang } from './i18n.js';
 import { loadFonts } from './fonts.js';
 import { TOTAL, problems as stepProblems, stepOk as isStepOk, suggestCallName } from './join-steps.js';
-import { formatLkMobile, groupLkMobile, toLkMobile } from './rules.js';
+import { formatLkMobile, fullName, groupLkMobile, toLkMobile } from './rules.js';
 import {
   actionButton,
   button,
@@ -486,7 +486,7 @@ async function boot() {
   }
   try {
     const config = await api.joinConfig(form.key);
-    form.teacher = `${config.teacher.name}${config.teacher.title ? ` ${config.teacher.title}` : ''}`;
+    form.teacher = fullName(config.teacher);
     form.subjects = config.subjects;
     form.curricula = config.curricula;
     // Hidden when the teacher offers only one, and then chosen for them.

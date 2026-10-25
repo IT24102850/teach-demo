@@ -7,6 +7,19 @@
  */
 
 export const TZ = process.env.APP_TIMEZONE || 'Asia/Colombo';
+
+/**
+ * The teacher's name as people say it. Mr, Mrs, Miss, Ms, Dr and Rev come
+ * first ("Mr Shehan Asher"); Sir and Madam, as Sri Lankan students use them,
+ * come after ("Nimal Sir"). Kept identical to fullName in /app/rules.js.
+ */
+const TITLE_AFTER = ['sir', 'madam'];
+export function fullName(teacher) {
+  const name = String(teacher?.name || '').trim();
+  const title = String(teacher?.title || '').trim();
+  if (!title) return name;
+  return TITLE_AFTER.includes(title.toLowerCase()) ? `${name} ${title}` : `${title} ${name}`;
+}
 export const HIST_WINDOW = 8; // "recent history" = the last 8 results
 
 /** Today's date in the teacher's timezone, as YYYY-MM-DD. */

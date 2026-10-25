@@ -16,7 +16,7 @@
 import * as db from './_lib/db.js';
 import { bad, clientIp, guard, ok, query, readJson, resource } from './_lib/http.js';
 import { codeLookup, hashCode, randomCode } from './_lib/session.js';
-import { toLkMobile } from './_lib/rules.js';
+import { fullName, toLkMobile } from './_lib/rules.js';
 import { render } from './_lib/templates.js';
 import { sendWhatsApp } from './_lib/whatsapp.js';
 
@@ -222,7 +222,7 @@ export default guard(async (req, res) => {
   /* ---------------------------------------------------------- welcome ---- */
 
   const lang = MEDIUM_LANG[body.medium] || 'en';
-  const text = render('code', { teacher: `${name}${body.title ? '' : ''}`, code }, lang);
+  const text = render('code', { teacher: fullName({ name, title: body.title }), code }, lang);
   const sent = await sendWhatsApp(phone, text);
 
   // Shown once. The code is only ever stored hashed, so this is the single
