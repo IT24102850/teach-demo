@@ -245,12 +245,13 @@ export async function markPaper({ pages, scheme = [], lang, prompt, fetchImpl = 
 
   /*
    * Google answers 503 "high demand" often enough that one try is not
-   * enough - but the function has 60 seconds in all, so the retries share
-   * one deadline rather than each getting a fresh minute. A second model
+   * enough - and it can take 25 s to say so. The function has 120 seconds
+   * (vercel.json), so the retries share one 100 s deadline rather than each
+   * getting a fresh one, and the function is never killed mid-answer. A second model
    * (GEMINI_FALLBACK_MODEL) is tried on the retries when one is set, since
    * an overloaded model is usually overloaded for everyone for a while.
    */
-  const deadline = Date.now() + (Number(process.env.GEMINI_TIMEOUT_MS) || 55_000);
+  const deadline = Date.now() + (Number(process.env.GEMINI_TIMEOUT_MS) || 100_000);
   const fallback = process.env.GEMINI_FALLBACK_MODEL || model;
   const plan = [model, fallback, fallback];
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

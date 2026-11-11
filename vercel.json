@@ -6,7 +6,7 @@
     { "source": "/onboard", "destination": "/onboard.html" }
   ],
   "functions": {
-    "api/review.js": { "maxDuration": 60 }
+    "api/review.js": { "maxDuration": 120 }
   },
   "crons": [
     { "path": "/api/cron", "schedule": "0 2 * * *" }
