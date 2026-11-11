@@ -844,7 +844,7 @@ function stopUndoTimer() {
  * is already sent; without it the server hands back a wa.me link and the
  * teacher taps once to send it from their own WhatsApp.
  */
-function showSendResult(result, { sentMessage } = {}) {
+export function showSendResult(result, { sentMessage } = {}) {
   if (result?.status === 'sent') {
     closeSheet();
     toast(sentMessage || t('reminder_sent', { name: '' }).trim());
@@ -868,7 +868,7 @@ function showSendResult(result, { sentMessage } = {}) {
 
 /* ------------------------------------------------------------ plumbing --- */
 
-async function reload(ctx, { quiet = false } = {}) {
+export async function reload(ctx, { quiet = false } = {}) {
   if (!quiet) S.busy = true;
   try {
     S.data = await api.teacherBootstrap();

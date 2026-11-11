@@ -38,6 +38,7 @@ const FILES = [
   '/app/screens/teacher-forms.js',
   '/app/screens/family.js',
   '/app/screens/income.js',
+  '/app/screens/review.js',
   '/app/qr.js',
   '/assets/logo.png',
   '/assets/icon-192.png',

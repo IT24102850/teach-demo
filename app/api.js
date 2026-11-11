@@ -67,6 +67,8 @@ export const api = {
   teacherPreview: (kind, studentId) => get(`teacher?r=preview&kind=${kind}&student_id=${studentId}`),
   slipUrl: (studentId) => get(`teacher?r=slip&student_id=${studentId}`),
   teacherDo: (action, body) => post(`teacher?r=${action}`, body || {}),
+  /** Gemini's suggested marks for a photographed answer paper. Saves nothing. */
+  reviewPaper: (body) => post('review', body),
 
   /* family */
   familyBootstrap: (childId) => get(`family?r=bootstrap${childId ? `&child_id=${childId}` : ''}`),

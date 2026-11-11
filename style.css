@@ -635,6 +635,93 @@ h1.att-h {
   margin-right: 4px;
 }
 
+/* Review with AI: the photographed pages, and the question-by-question list. */
+.thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+.thumb {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--card2);
+  border: 1px solid var(--line);
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.thumb > span {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+.thumb-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.thumb.add {
+  display: grid;
+  place-content: center;
+  gap: 2px;
+  color: var(--tt);
+  font-size: 26px;
+  font-weight: 800;
+  cursor: pointer;
+  border-style: dashed;
+}
+.thumb.add span {
+  position: static;
+  background: none;
+  color: var(--mu);
+  font-size: 11px;
+  padding: 0;
+}
+.rv-q {
+  border-left: 4px solid var(--line);
+}
+.rv-q.correct {
+  border-left-color: var(--green);
+}
+.rv-q.partial {
+  border-left-color: var(--teal);
+}
+.rv-q.wrong {
+  border-left-color: var(--pink);
+}
+.rv-p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+.rv-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.rv-list li {
+  margin: 4px 0;
+}
+
 .slip {
   width: 100%;
   border-radius: 14px;

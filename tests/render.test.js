@@ -690,6 +690,23 @@ test('Student detail shows fees, marks, classes and the actions', () => {
   assert.match(html, /data-a="mark.add"/);
 });
 
+test('Review with AI appears only when the server has a key', () => {
+  asTeacher({ sub: { view: 'student', id: 's1' } });
+  assert.ok(!teacher.studentDetail().includes('review.open'), 'hidden without a key');
+  S.data.ai_review = true;
+  assert.match(teacher.studentDetail(), /data-a="review.open"/);
+});
+
+test('the Review with AI screen asks for photos, then shows the suggestion', () => {
+  asTeacher({ sub: { view: 'review', id: 's1' } });
+  S.data.ai_review = true;
+  const form = check('review form', teacher.SUBS.review());
+  assert.match(form, /data-a="review.pick" data-i="pages"/);
+  assert.match(form, /data-a="review.pick" data-i="scheme"/);
+  assert.match(form, /id="rv-title"/);
+  assert.match(form, /data-a="review.run"/);
+});
+
 test('a pending student shows the fee box, not the fee balance', () => {
   asTeacher({ sub: { view: 'student', id: 's4' } });
   const html = check('studentDetail pending', teacher.studentDetail());

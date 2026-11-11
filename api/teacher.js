@@ -172,6 +172,8 @@ async function bootstrap(req, tid) {
       revenue: soldByPaper[p.id]?.revenue || 0,
     })),
     whatsapp_server: Boolean(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID),
+    // "Review with AI" only appears when the server can actually do it.
+    ai_review: Boolean(process.env.GEMINI_API_KEY),
   };
 }
 
@@ -1352,7 +1354,11 @@ async function handlePost(req, res, tid, r) {
         },
         { returning: 'minimal' },
       );
-      const text = render('mark', { student: student.name, score, max, test: title }, lang);
+      // A mark saved from an AI review carries the note the teacher approved
+      // (and could edit) on that screen; it goes out under the score.
+      const feedback = String(body.feedback || '').trim().slice(0, 1200);
+      const scoreLine = render('mark', { student: student.name, score, max, test: title }, lang);
+      const text = feedback ? `${scoreLine}\n\n${feedback}` : scoreLine;
       const result = await notifyParent({
         tid,
         student,

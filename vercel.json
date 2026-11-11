@@ -5,6 +5,9 @@
     { "source": "/join/:key", "destination": "/join.html" },
     { "source": "/onboard", "destination": "/onboard.html" }
   ],
+  "functions": {
+    "api/review.js": { "maxDuration": 60 }
+  },
   "crons": [
     { "path": "/api/cron", "schedule": "0 2 * * *" }
   ],

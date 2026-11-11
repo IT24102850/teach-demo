@@ -175,6 +175,19 @@ function fixtures() {
 let DB = fixtures();
 let calls = [];
 
+/** What the Gemini stub answers. Each review test sets its own. */
+let GEMINI = { status: 200, body: {} };
+const geminiAnswer = (review) => ({
+  candidates: [
+    {
+      finishReason: 'STOP',
+      content: {
+        parts: [{ text: 'thinking about it', thought: true }, { text: JSON.stringify(review) }],
+      },
+    },
+  ],
+});
+
 /** The subset of PostgREST's filter language the handlers use. */
 function matches(row, params) {
   for (const [key, raw] of Object.entries(params)) {
@@ -238,6 +251,13 @@ globalThis.fetch = async (url, init = {}) => {
 
   const json = (status, data) =>
     new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
+
+  /* Gemini: "Review with AI" */
+  if (parsed.hostname === 'generativelanguage.googleapis.com') {
+    // A list is answered in turn, so a test can say "busy, then fine".
+    const next = Array.isArray(GEMINI) ? GEMINI.shift() : GEMINI;
+    return json(next.status, next.body);
+  }
 
   /* storage */
   if (parsed.pathname.startsWith('/storage/v1/object/sign/')) {
@@ -2449,4 +2469,163 @@ test('tomorrow’s classes are notified once, and marked so', async () => {
   } else {
     assert.equal(second.json.class_reminders, 0);
   }
+});
+
+/* ======================================================== review with AI == */
+
+const reviewApi = (await import('../api/review.js')).default;
+const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDA==';
+
+const goodReview = {
+  total_awarded: 34,
+  total_max: 50,
+  questions: [
+    { label: '1', awarded: 10, max: 10, verdict: 'correct', comment: 'Clear working.' },
+    { label: '2a', awarded: 4, max: 10, verdict: 'partial', comment: 'Forgot to square the radius.' },
+  ],
+  summary: 'Solid algebra, careless with formulas.',
+  strengths: ['Algebra'],
+  improve: ['Area formulas'],
+  unreadable: [],
+  parent_note: '{student} did well on algebra. Please help {student} revise area formulas.',
+  confidence: 'high',
+};
+
+const review = (cookie, body) => call(reviewApi, { method: 'POST', url: '/api/review', cookie, body });
+
+test('review with AI: signed-in teachers only, and only when a key is set', async () => {
+  reset();
+  const anon = await call(reviewApi, { method: 'POST', url: '/api/review', body: {} });
+  assert.equal(anon.statusCode, 401);
+
+  const cookie = await signInTeacher();
+  delete process.env.GEMINI_API_KEY;
+  const off = await review(cookie, { student_id: KASUN, pages: [PHOTO] });
+  assert.equal(off.statusCode, 503);
+
+  const boot = await call(teacherApi, { url: '/api/teacher?r=bootstrap', cookie });
+  assert.equal(boot.json.ai_review, false, 'the button is hidden without a key');
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+  const on = await call(teacherApi, { url: '/api/teacher?r=bootstrap', cookie });
+  assert.equal(on.json.ai_review, true);
+});
+
+test('review with AI: refuses what it cannot or must not send', async () => {
+  const cookie = await signInTeacher();
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+  const none = await review(cookie, { student_id: KASUN, pages: [] });
+  assert.equal(none.statusCode, 400);
+
+  const notImage = await review(cookie, { student_id: KASUN, pages: ['data:text/html;base64,PGgxPg=='] });
+  assert.equal(notImage.statusCode, 400);
+  assert.match(notImage.json.error, /Only photos/);
+
+  const tooMany = await review(cookie, { student_id: KASUN, pages: Array(9).fill(PHOTO) });
+  assert.equal(tooMany.statusCode, 400);
+
+  const huge = await review(cookie, {
+    student_id: KASUN,
+    pages: [`data:image/jpeg;base64,${'A'.repeat(4_400_000)}`],
+  });
+  assert.equal(huge.statusCode, 413);
+
+  const stranger = await review(cookie, {
+    student_id: '99999999-9999-9999-9999-999999999999',
+    pages: [PHOTO],
+  });
+  assert.equal(stranger.statusCode, 404, 'only this teacher’s own students');
+
+  assert.ok(
+    !calls.some((c) => c.path.includes(':generateContent')),
+    'nothing was sent to Google for a refused request',
+  );
+});
+
+test('review with AI: marks the paper, keeps the name off Google, and fills it back in', async () => {
+  const cookie = await signInTeacher();
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+  GEMINI = { status: 200, body: geminiAnswer(goodReview) };
+
+  const res = await review(cookie, {
+    student_id: KASUN,
+    title: 'Model paper 3',
+    max_score: 50,
+    notes: 'Q2 is worth 10',
+    pages: [PHOTO, PHOTO],
+    scheme: [PHOTO],
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  const r = res.json.review;
+  assert.equal(r.score, 34);
+  assert.equal(r.max_score, 50);
+  assert.equal(r.questions.length, 2);
+  assert.equal(r.questions[1].verdict, 'partial');
+  assert.equal(r.parent_note, 'Kasun did well on algebra. Please help Kasun revise area formulas.');
+
+  const sent = calls.find((c) => c.path.includes(':generateContent'));
+  assert.ok(sent, 'Gemini was called');
+  const wire = JSON.stringify(sent.body);
+  assert.ok(!wire.includes('Kasun') && !wire.includes('Perera'), 'the student’s name never leaves');
+  assert.match(wire, /out of 50 marks/);
+  assert.match(wire, /Q2 is worth 10/);
+  assert.equal(
+    sent.body.contents[0].parts.filter((p) => p.inlineData).length,
+    3,
+    'two answer pages and one scheme page',
+  );
+  assert.equal(sent.body.generationConfig.responseMimeType, 'application/json');
+  assert.equal(DB.marks.length, 0, 'a review saves nothing by itself');
+});
+
+test('review with AI: a Gemini failure is a message, not a crash', async () => {
+  const cookie = await signInTeacher();
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+  GEMINI = { status: 429, body: { error: { message: 'quota' } } };
+  const busy = await review(cookie, { student_id: KASUN, pages: [PHOTO] });
+  assert.equal(busy.statusCode, 503);
+  assert.match(busy.json.error, /busy/);
+
+  // Google's "high demand" 503 is retried, and the second answer is used.
+  calls = [];
+  GEMINI = [
+    { status: 503, body: { error: { message: 'This model is currently experiencing high demand.' } } },
+    { status: 200, body: geminiAnswer(goodReview) },
+  ];
+  const retried = await review(cookie, { student_id: KASUN, max_score: 50, pages: [PHOTO] });
+  assert.equal(retried.statusCode, 200, retried.bodyText);
+  assert.equal(retried.json.review.score, 34);
+  assert.equal(calls.filter((c) => c.path.includes(':generateContent')).length, 2);
+
+  GEMINI = {
+    status: 200,
+    body: { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"total_' }] } }] },
+  };
+  const cut = await review(cookie, { student_id: KASUN, pages: [PHOTO] });
+  assert.equal(cut.statusCode, 502);
+  assert.match(cut.json.error, /fewer pages/);
+});
+
+test('a mark saved from a review sends the approved note with the score', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=mark.add',
+    cookie,
+    body: {
+      student_id: KASUN,
+      title: 'Model paper 3',
+      score: 34,
+      max_score: 50,
+      feedback: 'Kasun did well on algebra.',
+    },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.match(
+    decodeURIComponent(res.json.link),
+    /34\/50 in Model paper 3\.\s+Kasun did well on algebra\./,
+  );
+  const event = DB.events.find((e) => e.type === 'mark');
+  assert.match(event.text, /34\/50/, 'the parent’s feed keeps the short line');
 });
