@@ -16,6 +16,8 @@
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 export const DEFAULT_MODEL = 'gemini-3.6-flash';
+/** Used when the main model is overloaded. Faster, a little more lenient. */
+export const DEFAULT_FALLBACK = 'gemini-3.1-flash-lite';
 
 export const configured = () => Boolean(process.env.GEMINI_API_KEY);
 
@@ -247,19 +249,27 @@ export async function markPaper({ pages, scheme = [], lang, prompt, fetchImpl = 
    * Google answers 503 "high demand" often enough that one try is not
    * enough - and it can take 25 s to say so. The function has 120 seconds
    * (vercel.json), so the retries share one 100 s deadline rather than each
-   * getting a fresh one, and the function is never killed mid-answer. A second model
-   * (GEMINI_FALLBACK_MODEL) is tried on the retries when one is set, since
-   * an overloaded model is usually overloaded for everyone for a while.
+   * getting a fresh one, and the function is never killed mid-answer.
+   *
+   * Retrying the same model is not enough: on the day this shipped, three
+   * tries in a row were all "high demand". The retries go to a second model
+   * (GEMINI_FALLBACK_MODEL, flash-lite by default), which answered in 4 s
+   * while the main one was down. It marks more generously, so its result is
+   * never reported as "confident" - the teacher is nudged to check it.
+   * Set GEMINI_FALLBACK_MODEL=none to retry the main model only.
    */
   const deadline = Date.now() + (Number(process.env.GEMINI_TIMEOUT_MS) || 100_000);
-  const fallback = process.env.GEMINI_FALLBACK_MODEL || model;
+  const wanted = process.env.GEMINI_FALLBACK_MODEL ?? DEFAULT_FALLBACK;
+  const fallback = !wanted || wanted === 'none' ? model : wanted;
   const plan = [model, fallback, fallback];
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   let res;
   let raw = '';
   let body = null;
+  let used = model;
   for (let attempt = 0; attempt < plan.length; attempt += 1) {
+    used = plan[attempt];
     try {
       res = await fetchImpl(`${ENDPOINT}/${encodeURIComponent(plan[attempt])}:generateContent`, {
         method: 'POST',
@@ -317,7 +327,8 @@ export async function markPaper({ pages, scheme = [], lang, prompt, fetchImpl = 
     .trim();
 
   try {
-    return JSON.parse(answer.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+    const result = JSON.parse(answer.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+    return { result, model: used, fallback: used !== model };
   } catch {
     console.error('[gemini] not JSON:', candidate.finishReason, answer.slice(0, 300));
     throw new GeminiError(

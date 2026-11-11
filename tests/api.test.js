@@ -2596,7 +2596,12 @@ test('review with AI: a Gemini failure is a message, not a crash', async () => {
   const retried = await review(cookie, { student_id: KASUN, max_score: 50, pages: [PHOTO] });
   assert.equal(retried.statusCode, 200, retried.bodyText);
   assert.equal(retried.json.review.score, 34);
-  assert.equal(calls.filter((c) => c.path.includes(':generateContent')).length, 2);
+  const tries = calls.filter((c) => c.path.includes(':generateContent'));
+  assert.equal(tries.length, 2);
+  assert.match(tries[0].path, /gemini-3\.6-flash:/, 'the main model first');
+  assert.match(tries[1].path, /gemini-3\.1-flash-lite:/, 'then the back-up model');
+  assert.equal(retried.json.review.fallback, true);
+  assert.equal(retried.json.review.confidence, 'medium', 'the back-up is never "confident"');
 
   GEMINI = {
     status: 200,

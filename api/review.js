@@ -78,12 +78,14 @@ export default guard(async (req, res) => {
   });
 
   try {
-    const raw = await markPaper({ pages, scheme, lang, prompt });
-    const review = normaliseReview(raw, {
+    const { result, model, fallback } = await markPaper({ pages, scheme, lang, prompt });
+    const review = normaliseReview(result, {
       maxScore,
       studentName: student.call_name || String(student.name || '').split(/\s+/)[0],
     });
-    return ok(res, { review });
+    // The back-up model marks more generously: never call its result confident.
+    if (fallback && review.confidence === 'high') review.confidence = 'medium';
+    return ok(res, { review: { ...review, model, fallback } });
   } catch (err) {
     if (err instanceof GeminiError) return bad(res, err.message, err.status);
     throw err;
