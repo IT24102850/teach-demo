@@ -10,7 +10,8 @@
 import * as db from './_lib/db.js';
 import { bad, guard, json, ok, query, readJson, resource } from './_lib/http.js';
 import { codeLookup, hashCode, randomCode } from './_lib/session.js';
-import { teacherSession } from './_lib/session.js';
+import { endSession, teacherSession } from './_lib/session.js';
+import { SUSPENDED_MESSAGE, teacherSuspended } from './_lib/active.js';
 import * as R from './_lib/rules.js';
 import { FEED, INVITE_LANGS, render } from './_lib/templates.js';
 import { sendWhatsApp, waLink } from './_lib/whatsapp.js';
@@ -1533,6 +1534,11 @@ export default guard(async (req, res) => {
   const session = teacherSession(req);
   if (!session) return bad(res, 'Please log in', 401);
   const tid = session.tid;
+  // The cookie outlives a pause by the owner; this is what makes a pause bite.
+  if (await teacherSuspended(tid)) {
+    endSession(res);
+    return bad(res, SUSPENDED_MESSAGE, 403);
+  }
   const r = resource(req);
 
   if (req.method === 'GET') {

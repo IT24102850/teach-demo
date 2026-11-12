@@ -15,7 +15,8 @@
 
 import * as db from './_lib/db.js';
 import { bad, clientIp, guard, ok, query, readJson, resource } from './_lib/http.js';
-import { codeLookup, hashCode, randomCode } from './_lib/session.js';
+import { codeLookup, hashCode } from './_lib/session.js';
+import { freeCode } from './_lib/codes.js';
 import { fullName, toLkMobile } from './_lib/rules.js';
 import { render } from './_lib/templates.js';
 import { sendWhatsApp } from './_lib/whatsapp.js';
@@ -56,22 +57,6 @@ async function freeJoinKey(name) {
     if (!taken) return candidate;
   }
   throw Object.assign(new Error('Could not make a sign-up link for that name'), { status: 500 });
-}
-
-/** A login code nothing else is using. */
-async function freeCode() {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const candidate = randomCode();
-    const lookup = codeLookup(candidate);
-    const [a, b] = await Promise.all([
-      db.selectOne('teachers', { select: 'id', code_lookup: `eq.${lookup}` }),
-      db.selectOne('family_accounts', { select: 'id', code_lookup: `eq.${lookup}` }),
-    ]);
-    if (!a && !b) return candidate;
-  }
-  throw Object.assign(new Error('Could not make a free code - increase CODE_LENGTH'), {
-    status: 500,
-  });
 }
 
 export default guard(async (req, res) => {

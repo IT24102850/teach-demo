@@ -102,6 +102,8 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return; // always live
+  // The owner's dashboard is never served from a cache, not even its shell.
+  if (/^\/(admin(\.html|\.css)?|app\/admin\.js)$/.test(url.pathname)) return;
 
   event.respondWith(
     IMMUTABLE.test(url.pathname) ? cacheFirst(event.request) : networkFirst(event.request),

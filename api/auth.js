@@ -26,6 +26,7 @@ import {
   verifyCode,
 } from './_lib/session.js';
 import { toLkMobile } from './_lib/rules.js';
+import { SUSPENDED_MESSAGE } from './_lib/active.js';
 
 /* A password has to be worth having; 8 characters is the floor. */
 const MIN_PASSWORD = 8;
@@ -53,6 +54,10 @@ async function failuresFor(ip) {
 const logAttempt = (ip, role, success) =>
   db.insert('login_attempts', { ip, role, ok: success }, { returning: 'minimal' }).catch(() => {});
 
+/** Shown to the owner, so a teacher who has stopped using the app is visible. */
+const touchTeacher = (id) =>
+  db.update('teachers', { last_login_at: new Date().toISOString() }, { id: `eq.${id}` }).catch(() => {});
+
 /**
  * Sign in as a teacher with an email and a password.
  *
@@ -70,7 +75,7 @@ async function loginWithPassword(req, res, body, ip) {
   }
 
   const teacher = await db.selectOne('teachers', {
-    select: 'id,name,title,email,password_hash,password_salt',
+    select: 'id,name,title,email,password_hash,password_salt,suspended_at',
     email: `eq.${email}`,
   });
 
@@ -79,7 +84,11 @@ async function loginWithPassword(req, res, body, ip) {
     return bad(res, 'That email and password did not work', 401);
   }
 
+  // Told only after the password was right, so it reveals nothing to a guesser.
+  if (teacher.suspended_at) return bad(res, SUSPENDED_MESSAGE, 403);
+
   await logAttempt(ip, 'teacher', true);
+  await touchTeacher(teacher.id);
   const session = { kind: 'teacher', tid: teacher.id };
   startSession(res, session);
   return ok(res, (await summaryOf(session)) ?? { role: 'teacher' });
@@ -195,10 +204,13 @@ async function summaryOf(session) {
 
   if (session.kind === 'teacher') {
     const teacher = await db.selectOne('teachers', {
-      select: 'id,name,title,lang,theme,auto_reminders,remind_after_days,subjects,curricula,join_key',
+      select: 'id,name,title,lang,theme,auto_reminders,remind_after_days,subjects,curricula,join_key,suspended_at',
       id: `eq.${session.tid}`,
     });
-    return teacher ? { role: 'teacher', teacher } : null;
+    // A paused teacher's cookie is ended by `me` rather than quietly honoured.
+    if (!teacher || teacher.suspended_at) return null;
+    delete teacher.suspended_at;
+    return { role: 'teacher', teacher };
   }
 
   if (session.kind === 'family') {
@@ -242,14 +254,16 @@ async function login(req, res) {
 
   if (wanted === 'teacher') {
     const teacher = await db.selectOne('teachers', {
-      select: 'id,name,title,code_hash,code_salt',
+      select: 'id,name,title,code_hash,code_salt,suspended_at',
       code_lookup: `eq.${lookup}`,
     });
     if (!teacher || !verifyCode(code, teacher.code_hash, teacher.code_salt)) {
       await logAttempt(ip, wanted, false);
       return bad(res, 'That code did not work', 401);
     }
+    if (teacher.suspended_at) return bad(res, SUSPENDED_MESSAGE, 403);
     await logAttempt(ip, wanted, true);
+    await touchTeacher(teacher.id);
     const session = { kind: 'teacher', tid: teacher.id };
     startSession(res, session);
     return ok(res, (await summaryOf(session)) ?? { role: 'teacher' });

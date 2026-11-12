@@ -24,11 +24,16 @@ import {
   userPrompt,
 } from './_lib/gemini.js';
 import { bad, guard, ok, readJson } from './_lib/http.js';
-import { teacherSession } from './_lib/session.js';
+import { endSession, teacherSession } from './_lib/session.js';
+import { SUSPENDED_MESSAGE, teacherSuspended } from './_lib/active.js';
 
 export default guard(async (req, res) => {
   const session = teacherSession(req);
   if (!session) return bad(res, 'Please log in', 401);
+  if (await teacherSuspended(session.tid)) {
+    endSession(res);
+    return bad(res, SUSPENDED_MESSAGE, 403);
+  }
   if (req.method !== 'POST') return bad(res, 'Use POST', 405);
   if (!configured()) return bad(res, 'AI review is not set up on the server.', 503);
 
@@ -77,6 +82,18 @@ export default guard(async (req, res) => {
     hasScheme: scheme.length > 0,
   });
 
+  // One row per review, kept for the owner's dashboard: how many, how slow,
+  // how often the back-up model was needed. Never the photos or the marks.
+  const started = Date.now();
+  const logReview = (row) =>
+    db
+      .insert(
+        'ai_reviews',
+        { teacher_id: tid, pages: pages.length + scheme.length, ms: Date.now() - started, ...row },
+        { returning: 'minimal' },
+      )
+      .catch(() => {});
+
   try {
     const { result, model, fallback } = await markPaper({ pages, scheme, lang, prompt });
     const review = normaliseReview(result, {
@@ -85,8 +102,11 @@ export default guard(async (req, res) => {
     });
     // The back-up model marks more generously: never call its result confident.
     if (fallback && review.confidence === 'high') review.confidence = 'medium';
+    await logReview({ model, fallback, ok: true, status: 200 });
     return ok(res, { review: { ...review, model, fallback } });
   } catch (err) {
+    const status = err instanceof GeminiError ? err.status : 500;
+    await logReview({ model: null, fallback: false, ok: false, status });
     if (err instanceof GeminiError) return bad(res, err.message, err.status);
     throw err;
   }
