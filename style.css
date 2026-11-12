@@ -100,7 +100,9 @@ body {
   background: #eef2f3;
 }
 
-/* Tamil is wider and does not suit uppercase or letter spacing (section 8.4). */
+/* Tamil and Sinhala are wider than Latin and do not suit uppercase or letter
+   spacing (section 8.4). Anton has no glyphs for either, so headings switch
+   to the script's own font instead of falling back to a mismatched system one. */
 :root[data-lang='ta'] body,
 :root[data-lang='ta'] h1,
 :root[data-lang='ta'] .big,
@@ -110,6 +112,47 @@ body {
   font-family: 'Noto Sans Tamil', Manrope, sans-serif;
   text-transform: none;
   letter-spacing: 0;
+}
+:root[data-lang='si'] body,
+:root[data-lang='si'] h1,
+:root[data-lang='si'] .big,
+:root[data-lang='si'] .lbl,
+:root[data-lang='si'] .btn,
+:root[data-lang='si'] #nav button,
+:root[data-lang='si'] .sheet-h,
+:root[data-lang='si'] .cal-h {
+  font-family: 'Noto Sans Sinhala', Manrope, sans-serif;
+  text-transform: none;
+  letter-spacing: 0;
+}
+:root[data-lang='ta'] .sheet-h,
+:root[data-lang='ta'] .cal-h {
+  font-family: 'Noto Sans Tamil', Manrope, sans-serif;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* The language picker on the sign-in screens: three scripts, one row. */
+.lang-pick {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+}
+.lang-pick button {
+  border: 0;
+  background: none;
+  color: var(--mu);
+  border-radius: 999px;
+  padding: 7px 11px;
+  font: 700 13px/1 Manrope, 'Noto Sans Sinhala', 'Noto Sans Tamil', sans-serif;
+  cursor: pointer;
+}
+.lang-pick button.on {
+  background: var(--teal);
+  color: var(--ink);
 }
 
 .skip {

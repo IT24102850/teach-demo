@@ -9,7 +9,7 @@
  */
 
 import { api } from '../api.js';
-import { t } from '../i18n.js';
+import { LANGS, t } from '../i18n.js';
 import * as R from '../rules.js';
 import {
   S,
@@ -1962,7 +1962,7 @@ export const ACTIONS = {
   'plus.inviteclass': async (classId, _el, ctx) => {
     try {
       const invite = await api.plusInvite(classId);
-      goSub('plusinvite', { invite, lang: S.lang === 'ta' ? 'ta' : 'en' });
+      goSub('plusinvite', { invite, lang: S.lang });
       ctx.render();
     } catch (err) {
       toast(err.message, 'bad');
@@ -2075,10 +2075,7 @@ function settingsSheet() {
     )}
     ${label(t('language'))}
     ${segmented(
-      [
-        { value: 'en', label: 'English' },
-        { value: 'ta', label: 'தமிழ்' },
-      ],
+      LANGS.map((l) => ({ value: l.code, label: l.label })),
       S.lang,
       'settings.lang',
     )}

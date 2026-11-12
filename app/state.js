@@ -49,7 +49,7 @@ export function loadPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
     if (['night', 'day', 'auto'].includes(saved.theme)) S.theme = saved.theme;
-    if (['en', 'ta'].includes(saved.lang)) S.lang = saved.lang;
+    if (['en', 'si', 'ta'].includes(saved.lang)) S.lang = saved.lang;
   } catch {
     /* private browsing, blocked storage: the defaults are fine */
   }

@@ -91,7 +91,7 @@ function growthCard(summary) {
 
 const monthShort = (month) =>
   R.parseDate(`${month}-01`)
-    .toLocaleDateString(S.lang === 'ta' ? 'ta-LK' : 'en-GB', { month: 'short', timeZone: 'UTC' })
+    .toLocaleDateString(R.localeOf(S.lang), { month: 'short', timeZone: 'UTC' })
     .toUpperCase();
 
 /* ------------------------------------------- students, month by month ---- */

@@ -64,15 +64,19 @@ export function daysInMonth(dateStr) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
 }
 
+/** The locale for dates in each language: en-GB, si-LK or ta-LK. */
+const LOCALES = { en: 'en-GB', si: 'si-LK', ta: 'ta-LK' };
+export const localeOf = (lang) => LOCALES[lang] || 'en-GB';
+
 export const monthTitle = (dateStr, lang = 'en') =>
-  parseDate(dateStr).toLocaleDateString(lang === 'ta' ? 'ta-LK' : 'en-GB', {
+  parseDate(dateStr).toLocaleDateString(localeOf(lang), {
     month: 'long',
     year: 'numeric',
     timeZone: 'UTC',
   });
 
 export const dateTitle = (dateStr, lang = 'en') =>
-  parseDate(dateStr).toLocaleDateString(lang === 'ta' ? 'ta-LK' : 'en-GB', {
+  parseDate(dateStr).toLocaleDateString(localeOf(lang), {
     weekday: 'long',
     day: 'numeric',
     month: 'short',
@@ -82,7 +86,7 @@ export const dateTitle = (dateStr, lang = 'en') =>
 /** Short weekday name in the chosen language, Monday first. */
 export function dayShort(index, lang = 'en') {
   const monday = new Date(Date.UTC(2024, 0, 1 + index)); // 1 Jan 2024 was a Monday
-  return monday.toLocaleDateString(lang === 'ta' ? 'ta-LK' : 'en-GB', {
+  return monday.toLocaleDateString(localeOf(lang), {
     weekday: 'short',
     timeZone: 'UTC',
   });

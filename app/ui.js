@@ -5,7 +5,7 @@
  * name with an apostrophe or an angle bracket can never become markup.
  */
 
-import { t } from './i18n.js';
+import { LANGS, getLang, t } from './i18n.js';
 import { groupLkMobile, initials, lkMobileError, toLkMobile } from './rules.js';
 
 /** Escape text for HTML. Never interpolate a value without it. */
@@ -45,6 +45,19 @@ export const iconButton = (glyph, { act, arg = '', aria, cls = '' } = {}) =>
   `<button class="ib ${cls}" type="button" data-a="${attr(act)}" data-i="${attr(arg)}" aria-label="${attr(
     aria || glyph,
   )}">${glyph}</button>`;
+
+/**
+ * English · සිංහල · தமிழ், each named in its own script so a person who reads
+ * only one of them can still find it. Used where there is no Settings sheet
+ * yet: the sign-in and sign-up screens.
+ */
+export const langPicker = (act) =>
+  `<div class="lang-pick" role="radiogroup" aria-label="${attr(t('language'))}">${LANGS.map(
+    (l) =>
+      `<button type="button" role="radio" aria-checked="${l.code === getLang()}" class="${
+        l.code === getLang() ? 'on' : ''
+      }" data-a="${attr(act)}" data-i="${l.code}" lang="${l.code}">${esc(l.label)}</button>`,
+  ).join('')}</div>`;
 
 export const backButton = () => iconButton('←', { act: 'back', aria: t('back') });
 

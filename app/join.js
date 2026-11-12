@@ -466,7 +466,7 @@ document.addEventListener('input', (event) => {
 function applyPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem('plus.prefs') || '{}');
-    if (['en', 'ta'].includes(saved.lang)) setLang(saved.lang);
+    if (['en', 'si', 'ta'].includes(saved.lang)) setLang(saved.lang);
     document.documentElement.dataset.lang = saved.lang || 'en';
     document.documentElement.dataset.mode = saved.theme === 'day' ? 'day' : 'night';
   } catch {

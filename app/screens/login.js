@@ -29,6 +29,7 @@ import {
   telValue,
   toast,
   wireTelFields,
+  langPicker,
 } from '../ui.js';
 
 const L = {
@@ -90,7 +91,7 @@ const isLocked = () => secondsLeft() > 0;
 function rolePicker() {
   return `
     <div class="row sp top-row">
-      ${iconButton(S.lang === 'en' ? 'த' : 'EN', { act: 'lang.toggle', aria: t('language') })}
+      ${langPicker('lang.set')}
       ${iconButton('◐', { act: 'theme.toggle', aria: t('appearance') })}
     </div>
     <div class="brand"><img class="logo" src="/assets/logo.png" alt="Plus" width="140" height="70"></div>
@@ -180,7 +181,7 @@ function captureSignin() {
 const topBar = () => `
   <div class="row sp top-row">
     ${iconButton('←', { act: 'login.unrole', aria: t('back') })}
-    ${iconButton(S.lang === 'en' ? 'த' : 'EN', { act: 'lang.toggle', aria: t('language') })}
+    ${langPicker('lang.set')}
   </div>`;
 
 /** Sign in with an email and a password. */
@@ -382,8 +383,8 @@ export const ACTIONS = {
     toast(t('code_hashed'), 'info');
   },
 
-  'lang.toggle': (_arg, _el, { render }) => {
-    S.lang = S.lang === 'en' ? 'ta' : 'en';
+  'lang.set': (lang, _el, { render }) => {
+    S.lang = ['en', 'si', 'ta'].includes(lang) ? lang : 'en';
     savePrefs();
     render();
   },

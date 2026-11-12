@@ -7,7 +7,7 @@
  */
 
 import { api } from '../api.js';
-import { t } from '../i18n.js';
+import { LANGS, t } from '../i18n.js';
 import * as R from '../rules.js';
 import { S, applyTheme, savePrefs } from '../state.js';
 import {
@@ -487,10 +487,7 @@ export const ACTIONS = {
       ${sheetTitle(t('settings'))}
       ${label(t('language'))}
       ${segmented(
-        [
-          { value: 'en', label: 'English' },
-          { value: 'ta', label: 'தமிழ்' },
-        ],
+        LANGS.map((l) => ({ value: l.code, label: l.label })),
         S.lang,
         'family.lang',
       )}
