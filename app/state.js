@@ -72,7 +72,8 @@ export function applyTheme() {
   root.dataset.mode = dark ? 'night' : 'day';
   root.dataset.lang = S.lang;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', dark ? '#000000' : '#ffffff');
+  // The status bar matches the top of the backdrop in each theme.
+  if (meta) meta.setAttribute('content', dark ? '#08262a' : '#e2f2f3');
 }
 
 /* ------------------------------------------------------------- lookups --- */

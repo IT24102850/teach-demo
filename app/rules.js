@@ -68,28 +68,53 @@ export function daysInMonth(dateStr) {
 const LOCALES = { en: 'en-GB', si: 'si-LK', ta: 'ta-LK' };
 export const localeOf = (lang) => LOCALES[lang] || 'en-GB';
 
-export const monthTitle = (dateStr, lang = 'en') =>
-  parseDate(dateStr).toLocaleDateString(localeOf(lang), {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
+/*
+ * Sinhala names, written out. Many browsers - desktop Chrome among them, and
+ * plenty of Android builds - ship without Sinhala date data, and silently
+ * print "Friday, Nov 13" in a Sinhala screen. English and Tamil come from
+ * the browser, which has both everywhere.
+ */
+const SI_DAY = ['සඳුදා', 'අඟහරුවාදා', 'බදාදා', 'බ්‍රහස්පතින්දා', 'සිකුරාදා', 'සෙනසුරාදා', 'ඉරිදා'];
+const SI_DAY_SHORT = ['සඳු', 'අඟ', 'බදා', 'බ්‍රහ', 'සිකු', 'සෙන', 'ඉරි'];
+const SI_MONTH = [
+  'ජනවාරි', 'පෙබරවාරි', 'මාර්තු', 'අප්‍රේල්', 'මැයි', 'ජූනි',
+  'ජූලි', 'අගෝස්තු', 'සැප්තැම්බර්', 'ඔක්තෝබර්', 'නොවැම්බර්', 'දෙසැම්බර්',
+];
 
-export const dateTitle = (dateStr, lang = 'en') =>
-  parseDate(dateStr).toLocaleDateString(localeOf(lang), {
+export function monthTitle(dateStr, lang = 'en') {
+  const d = parseDate(dateStr);
+  if (lang === 'si') return `${d.getUTCFullYear()} ${SI_MONTH[d.getUTCMonth()]}`;
+  return d.toLocaleDateString(localeOf(lang), { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+export function dateTitle(dateStr, lang = 'en') {
+  const d = parseDate(dateStr);
+  if (lang === 'si') {
+    return `${SI_DAY[weekday(dateStr)]}, ${SI_MONTH[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  }
+  return d.toLocaleDateString(localeOf(lang), {
     weekday: 'long',
     day: 'numeric',
     month: 'short',
     timeZone: 'UTC',
   });
+}
 
 /** Short weekday name in the chosen language, Monday first. */
 export function dayShort(index, lang = 'en') {
+  if (lang === 'si') return SI_DAY_SHORT[index];
   const monday = new Date(Date.UTC(2024, 0, 1 + index)); // 1 Jan 2024 was a Monday
   return monday.toLocaleDateString(localeOf(lang), {
     weekday: 'short',
     timeZone: 'UTC',
   });
+}
+
+/** A short month name: "Nov", "நவ.", "නොවැම්බර්". */
+export function monthShortName(dateStr, lang = 'en') {
+  const d = parseDate(dateStr);
+  if (lang === 'si') return SI_MONTH[d.getUTCMonth()];
+  return d.toLocaleDateString(localeOf(lang), { month: 'short', timeZone: 'UTC' });
 }
 
 export const hhmm = (t) => String(t || '').slice(0, 5);

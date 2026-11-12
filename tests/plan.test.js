@@ -1029,3 +1029,37 @@ test('Mr, Mrs, Dr go before the name; Sir and Madam after', () => {
     "Hi! Mr Shehan Asher's classes now use Plus. Join to see attendance, marks and class updates: L",
   );
 });
+
+/* =========================================================================
+   Three languages: English, Sinhala, Tamil
+   ========================================================================= */
+
+test('every key the app uses has a Sinhala and a Tamil translation', async () => {
+  const { missingTranslations, LANGS } = await import('../app/i18n.js');
+  assert.deepEqual(missingTranslations('si'), []);
+  assert.deepEqual(missingTranslations('ta'), []);
+  assert.deepEqual(LANGS.map((l) => l.code), ['en', 'si', 'ta']);
+});
+
+test('Sinhala dates do not depend on the browser having Sinhala data', () => {
+  assert.equal(CR.dateTitle('2026-11-13', 'si'), 'සිකුරාදා, නොවැම්බර් 13');
+  assert.equal(CR.monthTitle('2026-11-13', 'si'), '2026 නොවැම්බර්');
+  assert.equal(CR.dayShort(0, 'si'), 'සඳු');
+  assert.equal(CR.dayShort(6, 'si'), 'ඉරි');
+});
+
+test('every WhatsApp message exists in Sinhala, with nothing left in English', () => {
+  const v = { teacher: 'Mr Shehan Asher', student: 'Kasun', subject: 'Maths', class: 'Grade 10 Maths', time: '4:00 PM', classes: 3, amount: 4500, link: 'L', day: 'Tue', place: 'Nugegoda', from: 'Tue', to: 'Wed', receipt: '#0012', balance: 0, test: 'T1', score: 40, max: 50, present: 7, total: 8, percent: 88, avg: 76, code: '123456', lines: 'x', paper: 'P1' };
+  for (const key of ['invite', 'plusInvite', 'classReminder', 'absent', 'fee', 'feePlus', 'moved', 'paid', 'mark', 'report', 'code', 'timetable', 'paper']) {
+    const si = message(key, v, 'si');
+    assert.notEqual(si, message(key, v, 'en'), `${key} falls back to English`);
+    assert.match(si, /[\u0D80-\u0DFF]/, `${key} has Sinhala in it`);
+  }
+  assert.doesNotMatch(message('feePlus', v, 'si'), /gentle reminder/, 'the fee part is Sinhala too');
+});
+
+test('the backdrop is one circuit mask, tinted per theme', () => {
+  assert.match(CSS, /mask: url\('\/assets\/circuit\.svg'\)/);
+  assert.match(CSS, /--bd-trace:/);
+  assert.match(read('assets/circuit.svg'), /<svg/);
+});
