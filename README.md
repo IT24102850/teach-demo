@@ -10,20 +10,13 @@ sending and a scheduled job for fee reminders.
 
 **Live:** <https://plus-teacher-app.vercel.app>
 
-| Sign in as | Code | Opens |
-| --- | --- | --- |
-| Teacher | `1234` | Nimal Sir — 17 students, 11 classes, 8 weeks of history |
-| Parent / Student | `3333` | Kasun Perera — owes 4 classes, LKR 6,000 |
-| Parent / Student | `4444` | Amaya Jayasinghe — all paid, top of the leaderboard |
-| Parent / Student | `5555` | Dilini **and** Nimali Silva — one code, two children |
-| Parent / Student | `6666` | Ravi Fernando — a bank slip waiting to be confirmed |
+That deployment is **production**: real teachers and real families use it.
+Teachers sign in with their email and password; parents and students with
+the 6-digit family code their teacher sends on WhatsApp. The same code opens
+both the Parent and the Student view; switch with the pill at the top right.
 
-The same code opens both the Parent and the Student view; switch with the pill
-at the top right. The sign-up form is at
-[`/join?t=nimal`](https://plus-teacher-app.vercel.app/join?t=nimal).
-
-Those codes are printed on the login screen because `DEMO_HINT=1` is set. Turn
-it off, and raise `CODE_LENGTH` to 6, before a real teacher uses this.
+Production runs with `DEMO_HINT=0` and `CODE_LENGTH=6`. Keep it that way: the
+hint prints sign-in codes on the login screen for anyone to read.
 
 ```
 Browser (PWA)  ──►  /api/* on Vercel  ──►  Supabase PostgreSQL + Storage
@@ -33,8 +26,9 @@ Browser (PWA)  ──►  /api/* on Vercel  ──►  Supabase PostgreSQL + Sto
 
 ---
 
-> The data behind that deployment is demo data. `npm run seed:fresh` rebuilds
-> it at any time.
+> `npm run seed` builds a demo teacher for a local or staging database. Do not
+> run it, or `check:live`, against production: both write test accounts into
+> the database real teachers use.
 
 ## Table of contents
 
