@@ -16,7 +16,7 @@
    that what is deployed is what runs. Images and icons, which do not change
    without changing name, stay cache first. */
 
-const SHELL = 'plus-shell-v4';
+const SHELL = 'plus-shell-v5';
 const FILES = [
   '/',
   '/index.html',
@@ -34,12 +34,15 @@ const FILES = [
   '/app/join-steps.js',
   '/app/onboard-steps.js',
   '/app/screens/login.js',
+  '/app/screens/account.js',
   '/app/screens/teacher.js',
   '/app/screens/teacher-forms.js',
   '/app/screens/family.js',
   '/app/screens/income.js',
+  '/app/screens/review.js',
   '/app/qr.js',
   '/assets/logo.png',
+  '/assets/circuit.svg',
   '/assets/icon-192.png',
   '/assets/icon-512.png',
 ];
@@ -101,6 +104,8 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return; // always live
+  // The owner's dashboard is never served from a cache, not even its shell.
+  if (/^\/(admin(\.html|\.css)?|app\/admin\.js)$/.test(url.pathname)) return;
 
   event.respondWith(
     IMMUTABLE.test(url.pathname) ? cacheFirst(event.request) : networkFirst(event.request),

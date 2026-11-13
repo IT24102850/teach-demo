@@ -15,6 +15,7 @@ process.env.SESSION_SECRET = 'test-session-secret-0123456789';
 process.env.LOGIN_PEPPER = 'test-login-pepper-0123456789';
 process.env.APP_TIMEZONE = 'Asia/Colombo';
 process.env.CODE_LENGTH = '4';
+process.env.PASSWORD_SCRYPT_LOG2 = '12'; // fast here; the cost travels inside each hash
 delete process.env.WHATSAPP_TOKEN;
 delete process.env.WHATSAPP_PHONE_ID;
 
@@ -169,11 +170,30 @@ function fixtures() {
       },
     ],
     family_children: [{ account_id: ACCOUNT, student_id: KASUN }],
+    /* Migration 008: real accounts and server-side sessions. */
+    accounts: [],
+    account_children: [],
+    account_invites: [],
+    login_sessions: [],
+    password_resets: [],
   };
 }
 
 let DB = fixtures();
 let calls = [];
+
+/** What the Gemini stub answers. Each review test sets its own. */
+let GEMINI = { status: 200, body: {} };
+const geminiAnswer = (review) => ({
+  candidates: [
+    {
+      finishReason: 'STOP',
+      content: {
+        parts: [{ text: 'thinking about it', thought: true }, { text: JSON.stringify(review) }],
+      },
+    },
+  ],
+});
 
 /** The subset of PostgREST's filter language the handlers use. */
 function matches(row, params) {
@@ -208,6 +228,8 @@ function compare(actual, op, value) {
       return String(actual) <= value;
     case 'lt':
       return String(actual) < value;
+    case 'gt':
+      return String(actual) > value;
     case 'is':
       return value === 'true' ? actual === true : value === 'false' ? actual === false : actual == null;
     case 'in': {
@@ -238,6 +260,13 @@ globalThis.fetch = async (url, init = {}) => {
 
   const json = (status, data) =>
     new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
+
+  /* Gemini: "Review with AI" */
+  if (parsed.hostname === 'generativelanguage.googleapis.com') {
+    // A list is answered in turn, so a test can say "busy, then fine".
+    const next = Array.isArray(GEMINI) ? GEMINI.shift() : GEMINI;
+    return json(next.status, next.body);
+  }
 
   /* storage */
   if (parsed.pathname.startsWith('/storage/v1/object/sign/')) {
@@ -410,6 +439,12 @@ globalThis.fetch = async (url, init = {}) => {
         attendance: DB.attendance.filter((a) => a.session_id === row.id),
       }));
     }
+    if (table === 'accounts' && (params.select || '').includes('account_children(')) {
+      rows = rows.map((row) => ({
+        ...row,
+        account_children: DB.account_children.filter((l) => l.account_id === row.id),
+      }));
+    }
     if (table === 'family_accounts' && (params.select || '').includes('family_children(')) {
       rows = rows.map((row) => ({
         ...row,
@@ -492,6 +527,8 @@ function makeRes() {
 const auth = (await import('../api/auth.js')).default;
 const teacherApi = (await import('../api/teacher.js')).default;
 const familyApi = (await import('../api/family.js')).default;
+const accountApi = (await import('../api/account.js')).default;
+const A = await import('../api/_lib/accounts.js');
 const joinApi = (await import('../api/join.js')).default;
 const cronApi = (await import('../api/cron.js')).default;
 
@@ -523,12 +560,32 @@ async function signInTeacher() {
   return cookieFrom(res);
 }
 
+/* Kasun's parent, with a real account and password (migration 008). */
+const PARENT_ACCOUNT = 'aaaaaaaa-0000-4000-8000-0000000000a1';
+const STUDENT_ACCOUNT = 'aaaaaaaa-0000-4000-8000-0000000000a2';
+const PARENT_PASSWORD = 'blue-kettle-42';
+const parentHash = await A.hashPassword(PARENT_PASSWORD);
+
+function giveKasunAccounts() {
+  if (DB.accounts.some((a) => a.id === PARENT_ACCOUNT)) return;
+  DB.accounts.push(
+    { id: PARENT_ACCOUNT, kind: 'parent', phone: '94770000001', username: null, display_name: 'Nadeesha Perera', password_hash: parentHash, parent_id: null, lang: 'en', failed_logins: 0, locked_until: null },
+    { id: STUDENT_ACCOUNT, kind: 'student', phone: null, username: 'kasun.p', display_name: 'Kasun', password_hash: parentHash, parent_id: PARENT_ACCOUNT, lang: 'en', failed_logins: 0, locked_until: null },
+  );
+  DB.account_children.push(
+    { account_id: PARENT_ACCOUNT, student_id: KASUN },
+    { account_id: STUDENT_ACCOUNT, student_id: KASUN },
+  );
+}
+
 async function signInFamily(role = 'parent') {
-  const res = await call(auth, {
-    method: 'POST',
-    url: '/api/auth?r=login',
-    body: { role, code: '3333' },
-  });
+  giveKasunAccounts();
+  A.forgetSessions();
+  const body =
+    role === 'student'
+      ? { who: 'student', username: 'kasun.p', password: PARENT_PASSWORD }
+      : { who: 'parent', phone: '077 000 0001', password: PARENT_PASSWORD };
+  const res = await call(accountApi, { method: 'POST', url: '/api/account?r=login', body });
   assert.equal(res.statusCode, 200, res.bodyText);
   return cookieFrom(res);
 }
@@ -562,10 +619,14 @@ test('a parent code cannot sign in as the teacher', async () => {
   assert.equal(res.statusCode, 401);
 });
 
-test('a teacher code cannot sign in as a parent', async () => {
+test('the shared family code is retired, and says what to do instead', async () => {
   reset();
-  const res = await call(auth, { method: 'POST', url: '/api/auth?r=login', body: { role: 'parent', code: '1234' } });
-  assert.equal(res.statusCode, 401);
+  for (const role of ['parent', 'student']) {
+    const res = await call(auth, { method: 'POST', url: '/api/auth?r=login', body: { role, code: '3333' } });
+    assert.equal(res.statusCode, 410, `${role}: gone, not "wrong"`);
+    assert.equal(res.json.code, 'family_codes_retired');
+  }
+  assert.equal(DB.login_sessions.length, 0, 'and nobody is signed in by it');
 });
 
 test('too many wrong codes locks the endpoint for a while', async () => {
@@ -578,15 +639,24 @@ test('too many wrong codes locks the endpoint for a while', async () => {
   assert.match(res.json.error, /Too many tries/);
 });
 
-test('the same code opens the Parent and the Student view', async () => {
+test('a parent and a student each get their own view, from their own accounts', async () => {
   reset();
   for (const role of ['parent', 'student']) {
-    const res = await call(auth, { method: 'POST', url: '/api/auth?r=login', body: { role, code: '3333' } });
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.json.role, role);
-    assert.equal(res.json.children.length, 1);
-    assert.equal(res.json.children[0].name, 'Kasun Perera');
+    const cookie = await signInFamily(role);
+    const me = await call(auth, { url: '/api/auth?r=me', cookie });
+    assert.equal(me.json.role, role);
+    assert.equal(me.json.children.length, 1);
+    assert.equal(me.json.children[0].name, 'Kasun Perera');
   }
+});
+
+test('signing out ends the session on the server, not just in the browser', async () => {
+  const cookie = await signInTeacher();
+  const out = await call(auth, { method: 'POST', url: '/api/auth?r=logout', cookie });
+  assert.match(String(out.getHeader('set-cookie')), /Max-Age=0/);
+  assert.ok(DB.login_sessions.every((x) => x.revoked_at), 'the row is revoked');
+  A.forgetSessions();
+  assert.equal((await call(teacherApi, { url: '/api/teacher?r=bootstrap', cookie })).statusCode, 401, 'a copied cookie is dead too');
 });
 
 test('a malformed code never reaches the database', async () => {
@@ -658,7 +728,9 @@ test('every bootstrap query is filtered by the signed-in teacher', async () => {
     const scoped =
       read.params.teacher_id === `eq.${TID}` ||
       read.params.id === `eq.${TID}` ||
-      read.path.endsWith('/teachers');
+      read.path.endsWith('/teachers') ||
+      // Finding the session itself, by the hash of the cookie's token.
+      (read.path.endsWith('/login_sessions') && /^eq\.[0-9a-f]{64}$/.test(read.params.token_hash));
     assert.ok(scoped, `${read.path} was not scoped to the teacher: ${JSON.stringify(read.params)}`);
   }
 });
@@ -741,7 +813,7 @@ test('a teacher can make their own account and is signed in straight away', asyn
   assert.equal(res.json.teacher.name, 'Shehan Asher');
   assert.equal(res.json.join_key, 'shehanasher');
   // Signed in: the session cookie is already on the response.
-  assert.match(res.headers['set-cookie'] || '', /plus_session=/);
+  assert.match(String(res.headers['set-cookie'] || ''), /plus_sid=/);
 
   const made = DB.teachers.find((x) => x.email === 'shehan@example.com');
   assert.equal(made.phone, '94771234567', 'the number is stored the WhatsApp way');
@@ -756,7 +828,9 @@ test('the password is hashed and salted, never stored as typed', async () => {
   await signup(newTeacher());
   const made = madeTeacher('shehan@example.com');
 
-  assert.ok(made.password_hash && made.password_salt);
+  // scrypt, with its own salt and cost written into the one string.
+  assert.match(made.password_hash, /^s2\$\d+\$[0-9a-f]{32}\$[0-9a-f]{64}$/);
+  assert.equal(made.password_salt, null, 'no separate salt column any more');
   assert.ok(!JSON.stringify(made).includes('correct horse battery'), 'the password is not in the row');
 
   // Two accounts with the same password get different hashes.
@@ -851,7 +925,7 @@ test('a teacher signs in with the email and password they chose', async () => {
   assert.equal(res.statusCode, 200, res.bodyText);
   assert.equal(res.json.role, 'teacher');
   assert.equal(res.json.teacher.name, 'Shehan Asher');
-  assert.match(res.headers['set-cookie'] || '', /plus_session=/);
+  assert.match(String(res.headers['set-cookie'] || ''), /plus_sid=/);
 });
 
 test('the email is not case sensitive at sign in', async () => {
@@ -1139,7 +1213,9 @@ test('subscribing again opens the app back up', async () => {
     body: { student_id: KASUN },
   });
 
-  const res = await call(familyApi, { url: '/api/family?r=bootstrap', cookie });
+  // signInTeacher() resets the stub database, and since migration 008 the
+  // family's account and session live there - so the family signs in again.
+  const res = await call(familyApi, { url: '/api/family?r=bootstrap', cookie: await signInFamily() });
   assert.ok(!res.json.locked, 'the family is back in');
   assert.ok(res.json.child);
 });
@@ -2078,7 +2154,7 @@ test('a single day can be cancelled and restored', async () => {
   assert.equal(DB.class_exceptions.length, 0);
 });
 
-test('confirming a new student sets the fee and makes a code once', async () => {
+test('confirming a new student sets the fee and sends the parent an app invite', async () => {
   const cookie = await signInTeacher();
   DB.v_students.push({ id: OTHER_CHILD, teacher_id: TID, name: 'Ishara Madushani', parent_phone: '94770000017', status: 'pending', fee_per_class: 0, amount_due: 0, pending_classes: 0, days_late: 0, hist: '' });
 
@@ -2087,29 +2163,42 @@ test('confirming a new student sets the fee and makes a code once', async () => 
 
   const res = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=student.confirm', cookie, body: { student_id: OTHER_CHILD, fee_per_class: 1000 } });
   assert.equal(res.statusCode, 200, res.bodyText);
-  assert.match(res.json.code, /^\d{4}$/, 'a four digit code, as configured');
+  assert.match(res.json.code, /^\d{6}$/, 'a six-digit invite');
+  assert.equal(res.json.days, 7);
 
-  const account = DB.family_accounts.find((a) => a.label?.includes('Ishara'));
-  assert.ok(account, 'a family account was created');
-  assert.ok(!('code' in account), 'the plain code is not stored');
-  assert.notEqual(account.code_hash, res.json.code);
-  assert.equal(account.code_lookup, codeLookup(res.json.code));
+  const invite = DB.account_invites.find((i) => i.student_id === OTHER_CHILD);
+  assert.ok(invite, 'an invite was made');
+  assert.equal(invite.phone, '94770000017', 'for the parent number only');
+  assert.ok(!JSON.stringify(invite).includes(res.json.code), 'the plain code is not stored');
+  assert.equal(invite.code_lookup, A.inviteLookup(res.json.code));
   const confirmed = DB.students.find((s) => s.id === OTHER_CHILD);
   assert.equal(confirmed.status, 'active', 'the student is approved');
   assert.equal(confirmed.fee_per_class, 1000, 'the fee the teacher typed is saved');
 
   const event = DB.events.find((e) => e.type === 'join');
-  assert.match(event.text, new RegExp(res.json.code));
+  assert.doesNotMatch(event.text, new RegExp(res.json.code), 'the code stays out of the updates feed');
 });
 
-test('a replacement family code is new, unique and shown once', async () => {
+test('a new app invite retires the one before it', async () => {
   const cookie = await signInTeacher();
-  const before = DB.family_accounts[0].code_hash;
-  const res = await call(teacherApi, { method: 'POST', url: '/api/teacher?r=student.newcode', cookie, body: { student_id: KASUN } });
-  assert.equal(res.statusCode, 200, res.bodyText);
-  assert.match(res.json.code, /^\d{4}$/);
-  assert.notEqual(DB.family_accounts[0].code_hash, before, 'the stored hash changed');
-  assert.equal(DB.family_accounts[0].code_lookup, codeLookup(res.json.code));
+  const send = () => call(teacherApi, { method: 'POST', url: '/api/teacher?r=student.invite', cookie, body: { student_id: KASUN } });
+  const first = await send();
+  assert.equal(first.statusCode, 200, first.bodyText);
+  const second = await send();
+  assert.notEqual(first.json.code, second.json.code);
+  const [older, newer] = DB.account_invites;
+  assert.ok(Date.parse(older.expires_at) <= Date.now(), 'the first no longer works');
+  assert.ok(Date.parse(newer.expires_at) > Date.now() + 6 * 864e5, 'the second lasts a week');
+
+  // ...and the newest one really does make the account.
+  A.forgetSessions();
+  const made = await call(accountApi, {
+    method: 'POST',
+    url: '/api/account?r=activate',
+    body: { phone: '0770000001', code: second.json.code, name: 'Nadeesha Perera', password: 'tall-teapot-31' },
+  });
+  assert.equal(made.statusCode, 200, made.bodyText);
+  assert.equal(made.json.children[0].name, 'Kasun Perera');
 });
 
 test('the sign-up link carries the teacher key', async () => {
@@ -2449,4 +2538,363 @@ test('tomorrow’s classes are notified once, and marked so', async () => {
   } else {
     assert.equal(second.json.class_reminders, 0);
   }
+});
+
+/* ======================================================== review with AI == */
+
+const reviewApi = (await import('../api/review.js')).default;
+const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDA==';
+
+const goodReview = {
+  total_awarded: 34,
+  total_max: 50,
+  questions: [
+    { label: '1', awarded: 10, max: 10, verdict: 'correct', comment: 'Clear working.' },
+    { label: '2a', awarded: 4, max: 10, verdict: 'partial', comment: 'Forgot to square the radius.' },
+  ],
+  summary: 'Solid algebra, careless with formulas.',
+  strengths: ['Algebra'],
+  improve: ['Area formulas'],
+  unreadable: [],
+  parent_note: '{student} did well on algebra. Please help {student} revise area formulas.',
+  confidence: 'high',
+};
+
+const review = (cookie, body) => call(reviewApi, { method: 'POST', url: '/api/review', cookie, body });
+
+test('review with AI: signed-in teachers only, and only when a key is set', async () => {
+  reset();
+  const anon = await call(reviewApi, { method: 'POST', url: '/api/review', body: {} });
+  assert.equal(anon.statusCode, 401);
+
+  const cookie = await signInTeacher();
+  delete process.env.GEMINI_API_KEY;
+  const off = await review(cookie, { student_id: KASUN, pages: [PHOTO] });
+  assert.equal(off.statusCode, 503);
+
+  const boot = await call(teacherApi, { url: '/api/teacher?r=bootstrap', cookie });
+  assert.equal(boot.json.ai_review, false, 'the button is hidden without a key');
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+  const on = await call(teacherApi, { url: '/api/teacher?r=bootstrap', cookie });
+  assert.equal(on.json.ai_review, true);
+});
+
+test('review with AI: refuses what it cannot or must not send', async () => {
+  const cookie = await signInTeacher();
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+  const none = await review(cookie, { student_id: KASUN, pages: [] });
+  assert.equal(none.statusCode, 400);
+
+  const notImage = await review(cookie, { student_id: KASUN, pages: ['data:text/html;base64,PGgxPg=='] });
+  assert.equal(notImage.statusCode, 400);
+  assert.match(notImage.json.error, /Only photos/);
+
+  const tooMany = await review(cookie, { student_id: KASUN, pages: Array(9).fill(PHOTO) });
+  assert.equal(tooMany.statusCode, 400);
+
+  const huge = await review(cookie, {
+    student_id: KASUN,
+    pages: [`data:image/jpeg;base64,${'A'.repeat(4_400_000)}`],
+  });
+  assert.equal(huge.statusCode, 413);
+
+  const stranger = await review(cookie, {
+    student_id: '99999999-9999-9999-9999-999999999999',
+    pages: [PHOTO],
+  });
+  assert.equal(stranger.statusCode, 404, 'only this teacher’s own students');
+
+  assert.ok(
+    !calls.some((c) => c.path.includes(':generateContent')),
+    'nothing was sent to Google for a refused request',
+  );
+});
+
+test('review with AI: marks the paper, keeps the name off Google, and fills it back in', async () => {
+  const cookie = await signInTeacher();
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+  GEMINI = { status: 200, body: geminiAnswer(goodReview) };
+
+  const res = await review(cookie, {
+    student_id: KASUN,
+    title: 'Model paper 3',
+    max_score: 50,
+    notes: 'Q2 is worth 10',
+    pages: [PHOTO, PHOTO],
+    scheme: [PHOTO],
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  const r = res.json.review;
+  assert.equal(r.score, 34);
+  assert.equal(r.max_score, 50);
+  assert.equal(r.questions.length, 2);
+  assert.equal(r.questions[1].verdict, 'partial');
+  assert.equal(r.parent_note, 'Kasun did well on algebra. Please help Kasun revise area formulas.');
+
+  const sent = calls.find((c) => c.path.includes(':generateContent'));
+  assert.ok(sent, 'Gemini was called');
+  const wire = JSON.stringify(sent.body);
+  assert.ok(!wire.includes('Kasun') && !wire.includes('Perera'), 'the student’s name never leaves');
+  assert.match(wire, /out of 50 marks/);
+  assert.match(wire, /Q2 is worth 10/);
+  assert.equal(
+    sent.body.contents[0].parts.filter((p) => p.inlineData).length,
+    3,
+    'two answer pages and one scheme page',
+  );
+  assert.equal(sent.body.generationConfig.responseMimeType, 'application/json');
+  assert.equal(DB.marks.length, 0, 'a review saves nothing by itself');
+});
+
+test('review with AI: a Gemini failure is a message, not a crash', async () => {
+  const cookie = await signInTeacher();
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+  GEMINI = { status: 429, body: { error: { message: 'quota' } } };
+  const busy = await review(cookie, { student_id: KASUN, pages: [PHOTO] });
+  assert.equal(busy.statusCode, 503);
+  assert.match(busy.json.error, /busy/);
+
+  // Google's "high demand" 503 is retried, and the second answer is used.
+  calls = [];
+  GEMINI = [
+    { status: 503, body: { error: { message: 'This model is currently experiencing high demand.' } } },
+    { status: 200, body: geminiAnswer(goodReview) },
+  ];
+  const retried = await review(cookie, { student_id: KASUN, max_score: 50, pages: [PHOTO] });
+  assert.equal(retried.statusCode, 200, retried.bodyText);
+  assert.equal(retried.json.review.score, 34);
+  const tries = calls.filter((c) => c.path.includes(':generateContent'));
+  assert.equal(tries.length, 2);
+  assert.match(tries[0].path, /gemini-3\.6-flash:/, 'the main model first');
+  assert.match(tries[1].path, /gemini-3\.1-flash-lite:/, 'then the back-up model');
+  assert.equal(retried.json.review.fallback, true);
+  assert.equal(retried.json.review.confidence, 'medium', 'the back-up is never "confident"');
+
+  GEMINI = {
+    status: 200,
+    body: { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"total_' }] } }] },
+  };
+  const cut = await review(cookie, { student_id: KASUN, pages: [PHOTO] });
+  assert.equal(cut.statusCode, 502);
+  assert.match(cut.json.error, /fewer pages/);
+});
+
+test('a mark saved from a review sends the approved note with the score', async () => {
+  const cookie = await signInTeacher();
+  const res = await call(teacherApi, {
+    method: 'POST',
+    url: '/api/teacher?r=mark.add',
+    cookie,
+    body: {
+      student_id: KASUN,
+      title: 'Model paper 3',
+      score: 34,
+      max_score: 50,
+      feedback: 'Kasun did well on algebra.',
+    },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.match(
+    decodeURIComponent(res.json.link),
+    /34\/50 in Model paper 3\.\s+Kasun did well on algebra\./,
+  );
+  const event = DB.events.find((e) => e.type === 'mark');
+  assert.match(event.text, /34\/50/, 'the parent’s feed keeps the short line');
+});
+
+/* =========================================================================
+   Migration 008: real accounts for parents and students
+   ========================================================================= */
+
+const INVITE = '482913';
+
+async function addInvite({ code = INVITE, phone = '94770000001', student = KASUN, expires = 7 } = {}) {
+  DB.account_invites.push({
+    id: `inv-${Math.random().toString(16).slice(2)}`,
+    teacher_id: TID,
+    student_id: student,
+    phone,
+    code_lookup: A.inviteLookup(code),
+    code_hash: await A.hashPassword(code),
+    expires_at: new Date(Date.now() + expires * 864e5).toISOString(),
+    used_at: null,
+    used_by: null,
+  });
+}
+
+const activate = (body) =>
+  call(accountApi, {
+    method: 'POST',
+    url: '/api/account?r=activate',
+    body: { phone: '077 000 0001', code: INVITE, name: 'Nadeesha Perera', password: 'new-kettle-77', ...body },
+  });
+
+const familyLoginAs = (body) => call(accountApi, { method: 'POST', url: '/api/account?r=login', body });
+
+test('an invite makes a parent account, signs them in, and works only once', async () => {
+  reset();
+  A.forgetSessions();
+  await addInvite();
+  const res = await activate();
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.role, 'parent');
+  assert.equal(res.json.created, true);
+  assert.equal(DB.accounts.length, 1);
+  assert.equal(DB.accounts[0].phone, '94770000001');
+  assert.match(DB.accounts[0].password_hash, /^s2\$/, 'stored hashed');
+  assert.ok(!JSON.stringify(DB.accounts[0]).includes('new-kettle-77'), 'never in plain text');
+  assert.deepEqual(DB.account_children.map((l) => l.student_id), [KASUN]);
+  assert.match(String(res.getHeader('set-cookie')), /HttpOnly/);
+  assert.equal(DB.login_sessions.length, 1);
+  const token = cookieFrom(res).split('=')[1];
+  assert.ok(!JSON.stringify(DB.login_sessions).includes(token), 'only a hash of the token is stored');
+
+  const again = await activate({ password: 'other-kettle-88' });
+  assert.equal(again.statusCode, 401, 'the same code cannot be used twice');
+  assert.equal(again.json.code, 'invite_bad');
+});
+
+test('an invite only works from the number it was sent to, and not after it expires', async () => {
+  reset();
+  await addInvite();
+  const wrongPhone = await activate({ phone: '077 999 9999' });
+  assert.equal(wrongPhone.statusCode, 401);
+  assert.equal(DB.accounts.length, 0);
+
+  reset();
+  await addInvite({ expires: -1 });
+  assert.equal((await activate()).statusCode, 401, 'expired');
+});
+
+test('a weak password is refused before the invite is spent', async () => {
+  reset();
+  await addInvite();
+  const weak = await activate({ password: 'password123' });
+  assert.equal(weak.statusCode, 400);
+  assert.equal(weak.json.code, 'password_common');
+  assert.equal(DB.account_invites[0].used_at, null, 'the code is still good');
+  assert.equal((await activate()).statusCode, 200);
+});
+
+test('a new invite resets a forgotten parent password and signs out old devices', async () => {
+  reset();
+  const oldCookie = await signInFamily();
+  await addInvite({ code: '135790' });
+  const res = await activate({ code: '135790', name: '', password: 'fresh-kettle-55' });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  assert.equal(res.json.existed, true);
+  A.forgetSessions();
+  const old = await call(familyApi, { url: '/api/family?r=bootstrap', cookie: oldCookie });
+  assert.equal(old.statusCode, 401, 'the phone that had the old password is signed out');
+  const login = await familyLoginAs({ who: 'parent', phone: '0770000001', password: 'fresh-kettle-55' });
+  assert.equal(login.statusCode, 200);
+});
+
+test('five wrong passwords lock a parent account', async () => {
+  reset();
+  giveKasunAccounts();
+  const wrong = { who: 'parent', phone: '0770000001', password: 'not-it-at-all' };
+  for (let i = 0; i < 5; i += 1) assert.equal((await familyLoginAs(wrong)).statusCode, 401);
+  const locked = await familyLoginAs({ ...wrong, password: PARENT_PASSWORD });
+  assert.equal(locked.statusCode, 423, 'even the right password waits');
+  assert.equal(locked.json.code, 'account_locked');
+});
+
+test('an unknown number and a wrong password get the same answer', async () => {
+  reset();
+  giveKasunAccounts();
+  const unknown = await familyLoginAs({ who: 'parent', phone: '0771111111', password: 'whatever-123' });
+  const wrong = await familyLoginAs({ who: 'parent', phone: '0770000001', password: 'whatever-123' });
+  assert.equal(unknown.statusCode, wrong.statusCode);
+  assert.equal(unknown.json.error, wrong.json.error);
+});
+
+test('a student sees their own record but cannot act for the family', async () => {
+  reset();
+  const cookie = await signInFamily('student');
+  const home = await call(familyApi, { url: '/api/family?r=bootstrap', cookie });
+  assert.equal(home.statusCode, 200, home.bodyText);
+  assert.equal(home.json.role, 'student');
+  for (const action of ['slip', 'reschedule']) {
+    const res = await call(familyApi, { method: 'POST', url: `/api/family?r=${action}`, cookie, body: { note: 'x' } });
+    assert.equal(res.statusCode, 403, `${action} is for parents`);
+  }
+  const logins = await call(accountApi, { url: '/api/account?r=logins', cookie });
+  assert.equal(logins.statusCode, 403, 'and cannot manage logins');
+});
+
+test("a parent makes, resets and removes a child's own login", async () => {
+  reset();
+  giveKasunAccounts();
+  DB.accounts = DB.accounts.filter((a) => a.kind === 'parent');
+  DB.account_children = DB.account_children.filter((l) => l.account_id === PARENT_ACCOUNT);
+  const cookie = await signInFamily();
+  const post = (r, body) => call(accountApi, { method: 'POST', url: `/api/account?r=${r}`, cookie, body });
+
+  const made = await post('student.create', { student_id: KASUN, username: 'Kasun.P', password: 'study-hard-9' });
+  assert.equal(made.statusCode, 200, made.bodyText);
+  assert.equal(made.json.username, 'kasun.p', 'usernames are kept in lower case');
+  assert.equal(DB.accounts.find((a) => a.kind === 'student').parent_id, PARENT_ACCOUNT);
+
+  const twice = await post('student.create', { student_id: KASUN, username: 'kasun2', password: 'study-hard-9' });
+  assert.equal(twice.statusCode, 409);
+  const notMine = await post('student.create', { student_id: AMAYA, username: 'amaya', password: 'study-hard-9' });
+  assert.equal(notMine.statusCode, 403, 'only for your own children');
+
+  const list = await call(accountApi, { url: '/api/account?r=logins', cookie });
+  assert.equal(list.json.children[0].login.username, 'kasun.p');
+
+  assert.equal((await post('student.password', { student_id: KASUN, password: 'study-more-10' })).statusCode, 200);
+  assert.equal((await post('student.delete', { student_id: KASUN })).statusCode, 200);
+  assert.equal(DB.accounts.filter((a) => a.kind === 'student').length, 0);
+});
+
+test('changing a password keeps this device and signs out the others', async () => {
+  reset();
+  const phone = await signInFamily();
+  const laptop = await signInFamily();
+  const res = await call(accountApi, {
+    method: 'POST',
+    url: '/api/account?r=password',
+    cookie: laptop,
+    body: { current: PARENT_PASSWORD, next: 'brand-new-kettle-1' },
+  });
+  assert.equal(res.statusCode, 200, res.bodyText);
+  A.forgetSessions();
+  assert.equal((await call(familyApi, { url: '/api/family?r=bootstrap', cookie: laptop })).statusCode, 200);
+  assert.equal((await call(familyApi, { url: '/api/family?r=bootstrap', cookie: phone })).statusCode, 401);
+
+  const wrong = await call(accountApi, {
+    method: 'POST',
+    url: '/api/account?r=password',
+    cookie: laptop,
+    body: { current: 'nope-nope-1', next: 'another-one-22' },
+  });
+  assert.equal(wrong.json.code, 'current_password_wrong');
+});
+
+test('a forgotten teacher password: the same answer for any email, and a one-time link', async () => {
+  reset();
+  DB.teachers[0].email = 'nimal@example.com';
+  const known = await call(accountApi, { method: 'POST', url: '/api/account?r=forgot', body: { email: 'nimal@example.com' } });
+  const unknown = await call(accountApi, { method: 'POST', url: '/api/account?r=forgot', body: { email: 'nobody@example.com' } });
+  assert.deepEqual(known.json, unknown.json, 'nothing says which one has an account');
+  assert.equal(DB.password_resets.length, 1, 'a link was made for the real one only');
+
+  const token = 'test-reset-token-abc';
+  DB.password_resets.push({
+    id: 'pr1',
+    teacher_id: TID,
+    token_hash: A.resetHash(token),
+    expires_at: new Date(Date.now() + 6e5).toISOString(),
+    used_at: null,
+  });
+  const done = await call(accountApi, { method: 'POST', url: '/api/account?r=reset', body: { token, password: 'teach-well-2026' } });
+  assert.equal(done.statusCode, 200, done.bodyText);
+  assert.match(DB.teachers[0].password_hash, /^s2\$/);
+  assert.equal(DB.teachers[0].password_salt, null);
+  const twice = await call(accountApi, { method: 'POST', url: '/api/account?r=reset', body: { token, password: 'teach-well-2027' } });
+  assert.equal(twice.json.code, 'reset_link_bad', 'the link works once');
 });

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 390 844" fill="none" stroke="#000" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Circuit traces for the app backdrop, used as a CSS mask so one file
+       serves both themes. Dense at the corners and edges, quiet in the middle
+       where the cards sit. -->
+  <g>
+    <!-- top right -->
+    <path d="M390 38H322l-22 22v46"/>
+    <path d="M390 62h-50l-14 14v72l-18 18h-40"/>
+    <path d="M390 92h-28l-8 8v26"/>
+    <path d="M354 0v18l-16 16h-58l-20 20v20"/>
+    <path d="M300 0v14l-10 10h-46"/>
+    <path d="M390 150h-24l-12 12v54l12 12h24"/>
+    <!-- top left -->
+    <path d="M0 120h40l18-18V60l14-14h36"/>
+    <path d="M0 152h58l12 12v30"/>
+    <path d="M28 0v34l12 12"/>
+    <!-- left edge -->
+    <path d="M0 330h22l14 14v66l-14 14H0"/>
+    <path d="M0 372h48l10 10v40"/>
+    <!-- right edge -->
+    <path d="M390 470h-30l-16-16v-52l-12-12h-22"/>
+    <path d="M390 512h-46l-10 10v34"/>
+    <!-- bottom left -->
+    <path d="M0 640h34l20 20v58l16 16h54"/>
+    <path d="M0 690h18l12 12v62l-10 10v70"/>
+    <path d="M70 844v-36l14-14h44l18-18v-26"/>
+    <path d="M0 786h44"/>
+    <!-- bottom right -->
+    <path d="M390 700h-44l-18 18v40l-14 14h-40"/>
+    <path d="M390 742h-22l-10 10v92"/>
+    <path d="M300 844v-22l-16-16h-34"/>
+  </g>
+  <!-- the vias where the traces end -->
+  <g fill="#000" stroke="none">
+    <circle cx="300" cy="106" r="3"/>
+    <circle cx="268" cy="166" r="3"/>
+    <circle cx="354" cy="126" r="2.5"/>
+    <circle cx="260" cy="74" r="3"/>
+    <circle cx="244" cy="24" r="2.5"/>
+    <circle cx="108" cy="46" r="3"/>
+    <circle cx="70" cy="194" r="3"/>
+    <circle cx="40" cy="46" r="2.5"/>
+    <circle cx="58" cy="422" r="3"/>
+    <circle cx="310" cy="390" r="3"/>
+    <circle cx="334" cy="556" r="3"/>
+    <circle cx="124" cy="734" r="3"/>
+    <circle cx="146" cy="750" r="2.5"/>
+    <circle cx="44" cy="786" r="2.5"/>
+    <circle cx="274" cy="772" r="3"/>
+    <circle cx="250" cy="806" r="2.5"/>
+  </g>
+  <!-- hollow pads, for a little variety -->
+  <g stroke-width="1.4">
+    <circle cx="366" cy="162" r="4"/>
+    <circle cx="22" cy="344" r="4"/>
+    <circle cx="360" cy="470" r="4"/>
+    <circle cx="20" cy="774" r="4"/>
+  </g>
+</svg>

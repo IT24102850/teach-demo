@@ -30,6 +30,7 @@ import {
 } from '../ui.js';
 import { ACTIONS as FORM_ACTIONS } from './teacher-forms.js';
 import { income, plusInvite } from './income.js';
+import { ACTIONS as REVIEW_ACTIONS, reviewAfter, reviewView } from './review.js';
 
 /* ----------------------------------------------------------- shared bits -- */
 
@@ -799,9 +800,9 @@ export function studentDetail() {
              ${button(t('confirm_and_send'), { act: 'student.confirm', arg: s.id })}`,
           )
         : card(
-            `${label(t('family_code'))}
-             ${muted(t('code_hashed'))}
-             ${button(t('new_code'), { act: 'student.newcode', arg: s.id, cls: 'o' })}`,
+            `${label(t('app_access'))}
+             ${muted(t('app_access_blurb'))}
+             ${button(t('send_app_invite'), { act: 'student.invite', arg: s.id, cls: 'o' })}`,
           )
     }
 
@@ -870,6 +871,11 @@ export function studentDetail() {
        }`,
     )}
 
+    ${
+      S.data.ai_review && s.status !== 'pending'
+        ? button(`✨ ${t('review_ai')}`, { act: 'review.open', arg: s.id, cls: 'wide mt-s' })
+        : ''
+    }
     <div class="row gap">
       ${button(t('add_mark'), { act: 'mark.add', arg: s.id, cls: 'o' })}
       ${button(t('send_report'), { act: 'report.send', arg: s.id })}
@@ -1164,9 +1170,10 @@ export const SUBS = {
   attendance,
   student: studentDetail,
   months: feeMonths,
+  review: reviewView,
 };
 
-export const ACTIONS = FORM_ACTIONS;
+export const ACTIONS = { ...FORM_ACTIONS, ...REVIEW_ACTIONS };
 
 /* The running class timer. One interval, started and stopped by `after`. */
 let timerHandle = null;
@@ -1345,6 +1352,9 @@ export function after(ctx) {
 
   /* Point 9, phase 2: press and hold a class to drag it somewhere else. */
   wireDrag(ctx);
+
+  /* Review with AI: the photo pickers. */
+  reviewAfter(ctx);
 
   if (S.tab === 'classes' && !S.sub && S.cal.mode !== 'month' && S.cal.date === S.today) {
     const line = document.querySelector('.now');

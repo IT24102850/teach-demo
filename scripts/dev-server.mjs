@@ -94,6 +94,7 @@ function rewrite(pathname) {
   if (pathname === '/' || pathname === '') return '/index.html';
   if (pathname === '/join' || pathname.startsWith('/join/')) return '/join.html';
   if (pathname === '/onboard') return '/onboard.html';
+  if (pathname === '/admin') return '/admin.html';
   return pathname;
 }
 

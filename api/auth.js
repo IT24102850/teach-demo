@@ -1,34 +1,39 @@
 /**
- * /api/auth  -  login, logout and "who am I".
+ * /api/auth  -  who is signed in, and the teacher's own sign-in.
  *
- *   GET  ?r=config   what the login screen needs before anyone types
- *   GET  ?r=me       the current session, so a reload stays logged in
- *   POST ?r=login    { role, code }  or  { email, password }
+ *   GET  ?r=config   what the sign-in screen needs before anyone types
+ *   GET  ?r=me       the current session, so a reload stays signed in
+ *   POST ?r=login    a teacher: { email, password }, or { role: 'teacher', code }
  *   POST ?r=signup   a teacher makes their own account
- *   POST ?r=logout
+ *   POST ?r=logout   ends this device's session on the server
  *
- * The code is checked here, on the server, never in the browser. Failed
- * attempts are counted per IP and the endpoint locks out after too many
- * (section 10: "a 4-digit code is easy to guess").
+ * Parents and students sign in through /api/account (migration 008); the old
+ * shared family code is retired, and saying so is all this file does with it.
+ *
+ * Every session is a row in login_sessions, so it can be listed and ended.
+ * Wrong answers are counted per address here and per teacher on their row,
+ * so neither a single phone nor a spread of addresses can guess for long.
  */
 
 import * as db from './_lib/db.js';
-import { bad, clientIp, guard, ok, readJson, resource } from './_lib/http.js';
-import {
-  codeLookup,
-  endSession,
-  familySession,
-  hashCode,
-  readSession,
-  secretsReady,
-  startSession,
-  teacherSession,
-  verifyCode,
-} from './_lib/session.js';
+import { bad, clientIp, guard, json, ok, readJson, resource } from './_lib/http.js';
+import { codeLookup, secretsReady, verifyCode } from './_lib/session.js';
 import { toLkMobile } from './_lib/rules.js';
+import { SUSPENDED_MESSAGE } from './_lib/active.js';
+import {
+  PASSWORD_MESSAGES,
+  endLoginSession,
+  failurePatch,
+  hashPassword,
+  lockedFor,
+  passwordProblem,
+  readLoginSession,
+  sameOrigin,
+  startLoginSession,
+  verifyPassword,
+} from './_lib/accounts.js';
+import { familySummary } from './_lib/family-access.js';
 
-/* A password has to be worth having; 8 characters is the floor. */
-const MIN_PASSWORD = 8;
 const SIGNUPS_PER_HOUR = Number(process.env.SIGNUP_MAX_PER_HOUR || 10);
 
 const cleanEmail = (value) => String(value || '').trim().toLowerCase();
@@ -37,6 +42,9 @@ const looksLikeEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
 const MAX_FAILS = Number(process.env.LOGIN_MAX_ATTEMPTS || 8);
 const WINDOW_MINUTES = Number(process.env.LOGIN_WINDOW_MINUTES || 15);
 const CODE_LENGTH = Number(process.env.CODE_LENGTH || 4);
+
+/** An error the app can translate: `code` is an i18n key, `error` the English. */
+const fail = (res, status, code, error) => json(res, status, { error, code });
 
 async function failuresFor(ip) {
   const since = new Date(Date.now() - WINDOW_MINUTES * 60_000).toISOString();
@@ -53,48 +61,106 @@ async function failuresFor(ip) {
 const logAttempt = (ip, role, success) =>
   db.insert('login_attempts', { ip, role, ok: success }, { returning: 'minimal' }).catch(() => {});
 
+const tooMany = (res) =>
+  fail(res, 429, 'too_many_tries_wait', `Too many tries. Please wait ${WINDOW_MINUTES} minutes and try again.`);
+
+const lockedFail = (res, minutes) =>
+  fail(res, 423, 'account_locked', `Too many wrong passwords. Try again in ${minutes} minutes.`);
+
 /**
- * Sign in as a teacher with an email and a password.
- *
- * The same lock-out as the code path, and the same answer whether the email
- * is unknown or the password is wrong - telling them apart would hand an
- * attacker a list of who has an account here.
+ * A good sign-in: the per-teacher counter is cleared, and the owner can see
+ * when this teacher last used the app.
+ */
+const touchTeacher = (id, extra = {}) =>
+  db
+    .update(
+      'teachers',
+      { failed_logins: 0, locked_until: null, last_login_at: new Date().toISOString(), ...extra },
+      { id: `eq.${id}` },
+    )
+    .catch(() => {});
+
+const TEACHER_FIELDS =
+  'id,name,title,email,password_hash,password_salt,suspended_at,failed_logins,locked_until';
+
+/** Shared by both teacher paths once the teacher row is found. */
+async function finishTeacher(req, res, ip, teacher, ok, rehashWith = null) {
+  if (!ok) {
+    await db.update('teachers', failurePatch(teacher), { id: `eq.${teacher.id}` }).catch(() => {});
+    await logAttempt(ip, 'teacher', false);
+    return null;
+  }
+  // Told only after the secret was right, so it reveals nothing to a guesser.
+  if (teacher.suspended_at) {
+    json(res, 403, { error: SUSPENDED_MESSAGE, code: 'account_paused' });
+    return false;
+  }
+  await logAttempt(ip, 'teacher', true);
+  const extra = rehashWith ? { password_hash: await hashPassword(rehashWith), password_salt: null } : {};
+  await touchTeacher(teacher.id, extra);
+  await startLoginSession(req, res, 'teacher', teacher.id);
+  return true;
+}
+
+/**
+ * Sign in as a teacher with an email and a password. The same answer
+ * whether the email is unknown or the password is wrong - telling them apart
+ * would hand an attacker a list of who has an account here.
  */
 async function loginWithPassword(req, res, body, ip) {
   const email = cleanEmail(body.email);
   const password = String(body.password || '');
+  if (!email || !password) return fail(res, 400, 'enter_email_password', 'Enter your email and password');
 
-  if (!email || !password) return bad(res, 'Enter your email and password');
-  if ((await failuresFor(ip)) >= MAX_FAILS) {
-    return bad(res, `Too many tries. Please wait ${WINDOW_MINUTES} minutes and try again.`, 429);
+  const teacher = await db.selectOne('teachers', { select: TEACHER_FIELDS, email: `eq.${email}` });
+  if (teacher) {
+    const minutes = lockedFor(teacher);
+    if (minutes) return lockedFail(res, minutes);
   }
+  // Hash even when there is no such teacher, so the answer takes the same time.
+  const check = await verifyPassword(
+    password,
+    teacher?.password_hash || 's2$12$00$00',
+    teacher?.password_salt || null,
+  );
+  const done = teacher ? await finishTeacher(req, res, ip, teacher, check.ok, check.rehash ? password : null) : null;
+  if (done === false) return undefined; // paused: already answered
+  if (!done) {
+    if (!teacher) await logAttempt(ip, 'teacher', false);
+    return fail(res, 401, 'email_password_wrong', 'That email and password did not work');
+  }
+  return ok(res, await summaryOf({ kind: 'teacher', sub: teacher.id }));
+}
 
+/** The login code the owner or the onboarding tool gives a teacher. */
+async function loginWithCode(req, res, body, ip) {
+  const code = String(body.code || '');
+  if (!/^\d{3,10}$/.test(code)) return fail(res, 400, 'enter_code', 'Enter your code');
   const teacher = await db.selectOne('teachers', {
-    select: 'id,name,title,email,password_hash,password_salt',
-    email: `eq.${email}`,
+    select: `${TEACHER_FIELDS},code_hash,code_salt`,
+    code_lookup: `eq.${codeLookup(code)}`,
   });
-
-  if (!teacher?.password_hash || !verifyCode(password, teacher.password_hash, teacher.password_salt)) {
-    await logAttempt(ip, 'teacher', false);
-    return bad(res, 'That email and password did not work', 401);
+  if (teacher) {
+    const minutes = lockedFor(teacher);
+    if (minutes) return lockedFail(res, minutes);
   }
-
-  await logAttempt(ip, 'teacher', true);
-  const session = { kind: 'teacher', tid: teacher.id };
-  startSession(res, session);
-  return ok(res, (await summaryOf(session)) ?? { role: 'teacher' });
+  const done = teacher
+    ? await finishTeacher(req, res, ip, teacher, verifyCode(code, teacher.code_hash, teacher.code_salt))
+    : null;
+  if (done === false) return undefined;
+  if (!done) {
+    if (!teacher) await logAttempt(ip, 'teacher', false);
+    return fail(res, 401, 'wrong_code', 'That code did not work');
+  }
+  return ok(res, await summaryOf({ kind: 'teacher', sub: teacher.id }));
 }
 
 /**
  * A teacher makes their own account.
  *
- * Open on purpose: a teacher who hears about Plus can start using it without
- * waiting for anybody. What that costs is that anybody can make an account
- * here, so it is rate limited per address and the sign-up collects enough to
- * be a real teacher rather than a drive-by row.
- *
- * They are signed in straight away - asking somebody to log in again with the
- * password they just chose is a pointless step.
+ * Open on purpose: a teacher who hears about Plus can start without waiting
+ * for anybody. So it is rate limited per address, and it collects enough to be
+ * a real teacher rather than a drive-by row. They are signed in straight away.
  */
 async function signup(req, res) {
   const ip = clientIp(req);
@@ -113,37 +179,35 @@ async function signup(req, res) {
   }
 
   const name = String(body.name || '').trim();
-  if (name.length < 2) return bad(res, 'Enter your full name');
+  if (name.length < 2) return fail(res, 400, 'enter_name', 'Enter your full name');
 
   const email = cleanEmail(body.email);
-  if (!looksLikeEmail(email)) return bad(res, 'Enter a valid email address');
-
-  const password = String(body.password || '');
-  if (password.length < MIN_PASSWORD) {
-    return bad(res, `Your password needs at least ${MIN_PASSWORD} characters`);
-  }
+  if (!looksLikeEmail(email)) return fail(res, 400, 'enter_email', 'Enter a valid email address');
 
   const phone = toLkMobile(body.phone);
-  if (!phone) return bad(res, 'Enter a Sri Lankan mobile number: 9 digits starting with 7');
+  if (!phone) return fail(res, 400, 'tel_nine', 'Enter a Sri Lankan mobile number: 9 digits starting with 7');
+
+  const password = String(body.password || '');
+  const problem = passwordProblem(password, { email, phone, name });
+  if (problem) return fail(res, 400, problem, PASSWORD_MESSAGES[problem]);
 
   const subjects = (Array.isArray(body.subjects) ? body.subjects : [])
     .map((x) => String(x).trim())
     .filter(Boolean)
     .slice(0, 20);
-  if (!subjects.length) return bad(res, 'Pick at least one subject');
+  if (!subjects.length) return fail(res, 400, 'pick_subject', 'Pick at least one subject');
 
   const area = String(body.area || '').trim();
 
   // Checked before inserting so the answer is a sentence rather than a
   // constraint violation. The unique index is still what guarantees it.
   const taken = await db.selectOne('teachers', { select: 'id', email: `eq.${email}` });
-  if (taken) return bad(res, 'There is already an account with that email', 409);
+  if (taken) return fail(res, 409, 'email_taken', 'There is already an account with that email');
 
   const sameNumber = await db.selectOne('teachers', { select: 'id', phone: `eq.${phone}` });
-  if (sameNumber) return bad(res, 'There is already an account with that number', 409);
+  if (sameNumber) return fail(res, 409, 'phone_taken', 'There is already an account with that number');
 
   const joinKey = await freeJoinKey(name);
-  const { hash, salt } = hashCode(password);
 
   const [teacher] = await db.insert('teachers', {
     name,
@@ -152,19 +216,18 @@ async function signup(req, res) {
     phone,
     join_key: joinKey,
     subjects,
-    lang: body.lang === 'ta' ? 'ta' : 'en',
-    password_hash: hash,
-    password_salt: salt,
+    lang: ['en', 'si', 'ta'].includes(body.lang) ? body.lang : 'en',
+    password_hash: await hashPassword(password),
+    password_salt: null,
+    password_changed_at: new Date().toISOString(),
     own_place_area: area || null,
     plus_since: new Date().toISOString().slice(0, 10),
   });
 
   await db.insert('login_attempts', { ip, role: 'signup', ok: true }, { returning: 'minimal' });
-
-  const session = { kind: 'teacher', tid: teacher.id };
-  startSession(res, session);
+  await startLoginSession(req, res, 'teacher', teacher.id);
   return ok(res, {
-    ...((await summaryOf(session)) ?? { role: 'teacher' }),
+    ...((await summaryOf({ kind: 'teacher', sub: teacher.id })) ?? { role: 'teacher' }),
     created: true,
     join_key: joinKey,
   });
@@ -186,107 +249,47 @@ async function freeJoinKey(name) {
 }
 
 /**
- * What the app needs to know about itself. It takes the session explicitly,
- * because straight after a login the cookie is on the response and not yet on
- * the request - reading it back from the request would answer with nothing.
+ * What the app needs to know about whoever is signed in, from a session
+ * { kind, sub }. A paused teacher, or a family whose children are all gone,
+ * is no session at all.
  */
 async function summaryOf(session) {
   if (!session) return null;
 
   if (session.kind === 'teacher') {
     const teacher = await db.selectOne('teachers', {
-      select: 'id,name,title,lang,theme,auto_reminders,remind_after_days,subjects,curricula,join_key',
-      id: `eq.${session.tid}`,
+      select: 'id,name,title,lang,theme,auto_reminders,remind_after_days,subjects,curricula,join_key,suspended_at',
+      id: `eq.${session.sub}`,
     });
-    return teacher ? { role: 'teacher', teacher } : null;
+    // A paused teacher's session is ended by `me` rather than quietly honoured.
+    if (!teacher || teacher.suspended_at) return null;
+    delete teacher.suspended_at;
+    return { role: 'teacher', teacher };
   }
 
-  if (session.kind === 'family') {
-    const children = await db.select('students', {
-      select: 'id,name,grade,area,subject,curriculum',
-      id: db.inList(session.children),
-      order: 'name.asc',
-    });
-    if (!children.length) return null;
-    const teacher = await db.selectOne('teachers', {
-      select: 'id,name,title,lang,theme',
-      id: `eq.${session.tid}`,
-    });
-    return {
-      role: session.role,
-      child_id: session.children.includes(session.child) ? session.child : children[0].id,
-      children,
-      teacher,
-    };
-  }
+  if (session.kind === 'parent' || session.kind === 'student') return familySummary(session.sub);
   return null;
 }
 
 async function login(req, res) {
   const ip = clientIp(req);
   const body = await readJson(req);
-  const { role, code } = body;
-  const wanted = String(role || '').toLowerCase();
+  if ((await failuresFor(ip)) >= MAX_FAILS) return tooMany(res);
 
-  // A teacher may sign in with an email and a password instead of a code.
   if (body.email || body.password) return loginWithPassword(req, res, body, ip);
 
-  if (!['teacher', 'parent', 'student'].includes(wanted)) return bad(res, 'Pick a role first');
-  if (!/^\d{3,10}$/.test(String(code || ''))) return bad(res, 'Enter your code');
-
-  if ((await failuresFor(ip)) >= MAX_FAILS) {
-    return bad(res, `Too many tries. Please wait ${WINDOW_MINUTES} minutes and try again.`, 429);
+  const role = String(body.role || '').toLowerCase();
+  if (role === 'teacher') return loginWithCode(req, res, body, ip);
+  if (role === 'parent' || role === 'student') {
+    // The shared family code is gone: each person now has their own account.
+    return fail(
+      res,
+      410,
+      'family_codes_retired',
+      'Family codes are no longer used. Sign in with your phone number, or ask your teacher for an app invite.',
+    );
   }
-
-  const lookup = codeLookup(code);
-
-  if (wanted === 'teacher') {
-    const teacher = await db.selectOne('teachers', {
-      select: 'id,name,title,code_hash,code_salt',
-      code_lookup: `eq.${lookup}`,
-    });
-    if (!teacher || !verifyCode(code, teacher.code_hash, teacher.code_salt)) {
-      await logAttempt(ip, wanted, false);
-      return bad(res, 'That code did not work', 401);
-    }
-    await logAttempt(ip, wanted, true);
-    const session = { kind: 'teacher', tid: teacher.id };
-    startSession(res, session);
-    return ok(res, (await summaryOf(session)) ?? { role: 'teacher' });
-  }
-
-  const account = await db.selectOne('family_accounts', {
-    select: 'id,teacher_id,code_hash,code_salt,family_children(student_id)',
-    code_lookup: `eq.${lookup}`,
-  });
-  if (!account || !verifyCode(code, account.code_hash, account.code_salt)) {
-    await logAttempt(ip, wanted, false);
-    return bad(res, 'That code did not work', 401);
-  }
-
-  const children = (account.family_children || []).map((c) => c.student_id);
-  if (!children.length) {
-    await logAttempt(ip, wanted, false);
-    return bad(res, 'This code is not linked to a student yet', 403);
-  }
-
-  await logAttempt(ip, wanted, true);
-  await db
-    .update('family_accounts', { last_login_at: new Date().toISOString() }, { id: `eq.${account.id}` })
-    .catch(() => {});
-
-  // The session carries the exact child ids it may read. Nothing in a later
-  // request can widen it, so one family can never reach another family's data.
-  const session = {
-    kind: 'family',
-    role: wanted,
-    aid: account.id,
-    tid: account.teacher_id,
-    children,
-    child: children[0],
-  };
-  startSession(res, session);
-  return ok(res, (await summaryOf(session)) ?? { role: wanted });
+  return fail(res, 400, 'pick_role', 'Pick a role first');
 }
 
 export default guard(async (req, res) => {
@@ -296,61 +299,36 @@ export default guard(async (req, res) => {
     return ok(res, {
       code_length: CODE_LENGTH,
       configured: db.configured && secretsReady,
-      demo_hint: process.env.DEMO_HINT === '1',
+      demo_hint: false,
     });
   }
 
   if (r === 'me') {
-    const session = readSession(req);
-    if (!session) return ok(res, { role: null });
-    const summary = await summaryOf(session);
+    const session = await readLoginSession(req);
+    const summary = session ? await summaryOf(session) : null;
     if (!summary) {
-      endSession(res);
+      // Also clears a cookie from before migration 008, which no longer opens anything.
+      if (session || /plus_session=|plus_sid=/.test(String(req.headers.cookie || ''))) {
+        await endLoginSession(req, res);
+      }
       return ok(res, { role: null });
     }
     return ok(res, summary);
   }
 
   if (req.method !== 'POST') return bad(res, 'Use POST', 405);
+  if (!sameOrigin(req)) return bad(res, 'Cross-site request refused', 403);
 
   if (r === 'logout') {
-    endSession(res);
+    await endLoginSession(req, res);
     return ok(res, { role: null });
   }
 
-  if (r === 'login') {
-    if (!db.configured) return bad(res, 'The server is not connected to a database yet', 503);
-    if (!secretsReady) return bad(res, 'SESSION_SECRET is not set on the server', 503);
-    return login(req, res);
-  }
+  if (!db.configured) return bad(res, 'The server is not connected to a database yet', 503);
+  if (!secretsReady) return bad(res, 'SESSION_SECRET is not set on the server', 503);
 
-  if (r === 'signup') {
-    if (!db.configured) return bad(res, 'The server is not connected to a database yet', 503);
-    if (!secretsReady) return bad(res, 'SESSION_SECRET is not set on the server', 503);
-    return signup(req, res);
-  }
-
-  if (r === 'child') {
-    // Switch child within the same family session (rule: one code, many children).
-    const f = familySession(req);
-    if (!f) return bad(res, 'Please log in again', 401);
-    const { child_id: childId } = await readJson(req);
-    if (!f.children.includes(childId)) return bad(res, 'Not your child', 403);
-    const next = { ...f, child: childId };
-    startSession(res, next);
-    return ok(res, await summaryOf(next));
-  }
-
-  if (r === 'role') {
-    // Switch between the Parent and Student view with the same family code.
-    const f = familySession(req);
-    if (!f) return bad(res, 'Please log in again', 401);
-    const { role } = await readJson(req);
-    if (!['parent', 'student'].includes(role)) return bad(res, 'Unknown role');
-    const next = { ...f, role };
-    startSession(res, next);
-    return ok(res, await summaryOf(next));
-  }
+  if (r === 'login') return login(req, res);
+  if (r === 'signup') return signup(req, res);
 
   return bad(res, 'Unknown request', 404);
 });

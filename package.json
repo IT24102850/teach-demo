@@ -18,6 +18,7 @@
     "seed": "node --env-file=.env scripts/seed.mjs",
     "seed:fresh": "node --env-file=.env scripts/seed.mjs --fresh",
     "set-code": "node --env-file=.env scripts/set-code.mjs",
+    "admin": "node --env-file=.env scripts/admin.mjs",
     "deploy": "vercel --prod"
   }
 }

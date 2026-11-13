@@ -1,9 +1,13 @@
 /**
  * /api/family  -  the Parent and Student views.
  *
- * The signed session carries the child ids this family may read. Every query
- * below is filtered by that list, so changing an id in the address bar reaches
- * nothing (test checklist: "a parent code cannot open another family's data").
+ * Who is asking, and which children they may read, is worked out from the
+ * server-side session on every request (familyAccess). Every query below is
+ * filtered by that list, so changing an id in the address bar reaches nothing
+ * (test checklist: "a parent code cannot open another family's data").
+ *
+ * A student sees their own record and cannot act for the family: sending a
+ * bank slip or asking to reschedule is a parent's job, checked here.
  *
  * The leaderboard is masked HERE, on the server: a parent's browser never
  * receives another child's surname (rule 7.4.5).
@@ -11,18 +15,14 @@
 
 import * as db from './_lib/db.js';
 import { bad, guard, ok, readJson, resource } from './_lib/http.js';
-import { familySession, startSession } from './_lib/session.js';
+import { sameOrigin } from './_lib/accounts.js';
+import { PARENT_ONLY, familyAccess } from './_lib/family-access.js';
 import * as R from './_lib/rules.js';
 
 const CHILD_FIELDS =
   'id,name,grade,school,area,curriculum,subject,fee_per_class,fee_status,parent_name,status,slip_path,' +
   'slip_sent_at,amount_due,pending_classes,days_late,hist,total_classes,present_classes,' +
   'mark_count,avg_pct,best_pct,first_pct,latest_pct';
-
-function activeChild(session, requested) {
-  const id = requested && session.children.includes(requested) ? requested : session.child;
-  return session.children.includes(id) ? id : session.children[0];
-}
 
 /**
  * The subscriber rule from the Income handoff: "there are no free parents in
@@ -65,8 +65,8 @@ async function lockedPayload(session, childId) {
   };
 }
 
-async function bootstrap(session, requestedChild) {
-  const childId = activeChild(session, requestedChild);
+async function bootstrap(session) {
+  const childId = session.child;
   const today = R.today();
 
   const plus = await subscriptionFor(childId);
@@ -186,14 +186,14 @@ function decodeDataUrl(dataUrl) {
 }
 
 export default guard(async (req, res) => {
-  const session = familySession(req);
-  if (!session) return bad(res, 'Please log in', 401);
   const r = resource(req);
 
   if (req.method === 'GET') {
+    const url = new URL(req.url, 'http://localhost');
+    const session = await familyAccess(req, url.searchParams.get('child_id'));
+    if (!session) return bad(res, 'Please log in', 401);
     if (r === 'bootstrap') {
-      const url = new URL(req.url, 'http://localhost');
-      const data = await bootstrap(session, url.searchParams.get('child_id'));
+      const data = await bootstrap(session);
       if (!data) return bad(res, 'Student not found', 404);
       return ok(res, data);
     }
@@ -201,8 +201,15 @@ export default guard(async (req, res) => {
   }
 
   if (req.method !== 'POST') return bad(res, 'Use POST', 405);
+  if (!sameOrigin(req)) return bad(res, 'Cross-site request refused', 403);
   const body = await readJson(req);
-  const childId = activeChild(session, body.child_id);
+  const session = await familyAccess(req, body.child_id);
+  if (!session) return bad(res, 'Please log in', 401);
+  const childId = session.child;
+
+  if (PARENT_ONLY.has(r) && session.kind !== 'parent') {
+    return bad(res, 'Only a parent can do this', 403);
+  }
 
   // The gate applies to writing as well as reading: a parent who is not
   // subscribed cannot send a slip or ask to reschedule either.
@@ -263,9 +270,9 @@ export default guard(async (req, res) => {
     }
 
     case 'child': {
+      // The child is a choice among this account's own; nothing is stored.
       if (!session.children.includes(body.child_id)) return bad(res, 'Not your child', 403);
-      startSession(res, { ...session, child: body.child_id });
-      return ok(res, await bootstrap({ ...session, child: body.child_id }));
+      return ok(res, await bootstrap(session));
     }
 
     default:

@@ -16,7 +16,6 @@ export const S = {
   error: null,
   configured: true,
   codeLength: 4,
-  demoHint: false,
 
   /* who */
   role: null, // null | 'teacher' | 'parent' | 'student'
@@ -49,7 +48,7 @@ export function loadPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
     if (['night', 'day', 'auto'].includes(saved.theme)) S.theme = saved.theme;
-    if (['en', 'ta'].includes(saved.lang)) S.lang = saved.lang;
+    if (['en', 'si', 'ta'].includes(saved.lang)) S.lang = saved.lang;
   } catch {
     /* private browsing, blocked storage: the defaults are fine */
   }
@@ -72,7 +71,8 @@ export function applyTheme() {
   root.dataset.mode = dark ? 'night' : 'day';
   root.dataset.lang = S.lang;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', dark ? '#000000' : '#ffffff');
+  // The status bar matches the top of the backdrop in each theme.
+  if (meta) meta.setAttribute('content', dark ? '#08262a' : '#e2f2f3');
 }
 
 /* ------------------------------------------------------------- lookups --- */

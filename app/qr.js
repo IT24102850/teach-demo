@@ -125,9 +125,10 @@ function buildData(bytes, version) {
   for (let i = 0; i < bits.length; i += 8) {
     data.push(bits.slice(i, i + 8).reduce((acc, bit) => (acc << 1) | bit, 0));
   }
-  // The standard's alternating pad bytes.
+  // The standard's alternating pad bytes, always starting with 0xEC - counted
+  // from the first pad byte, not from how long the data happened to be.
   const PAD = [0xec, 0x11];
-  while (data.length < capacity) data.push(PAD[data.length % 2 ? 1 : 0]);
+  for (let i = 0; data.length < capacity; i += 1) data.push(PAD[i % 2]);
   return data;
 }
 
@@ -261,9 +262,37 @@ function placeFormat(m, mask) {
   m.cells[7][8] = at(6);
   for (let i = 9; i <= 14; i += 1) m.cells[14 - i][8] = at(14 - i);
 
-  for (let i = 0; i <= 7; i += 1) m.cells[m.size - 1 - i][8] = at(i);
-  for (let i = 8; i <= 14; i += 1) m.cells[8][m.size - 15 + i] = at(i);
+  // The second copy: bits 0-7 along row 8 under the top-right finder, bits
+  // 8-14 down column 8 beside the bottom-left one.
+  for (let i = 0; i <= 7; i += 1) m.cells[8][m.size - 1 - i] = at(i);
+  for (let i = 8; i <= 14; i += 1) m.cells[m.size - 15 + i][8] = at(i);
   m.cells[m.size - 8][8] = 1;
+}
+
+/**
+ * Version 7 and up carry their own version number, twice, beside the top-right
+ * and bottom-left finders: 6 bits of version and a 12-bit BCH code over them
+ * (generator 0x1F25). A scanner reads these before anything else on a code
+ * that size and refuses the code if they are missing - which a decoder that
+ * only checks the payload never notices. Short links stay below version 7 and
+ * never needed it; an authenticator's otpauth:// link does not.
+ */
+export function versionBits(version) {
+  let rem = version;
+  for (let i = 0; i < 12; i += 1) rem = (rem << 1) ^ ((rem >> 11) * 0x1f25);
+  return (version << 12) | rem;
+}
+
+function placeVersion(m, version) {
+  if (version < 7) return;
+  const bits = versionBits(version);
+  for (let i = 0; i < 18; i += 1) {
+    const bit = (bits >> i) & 1;
+    const a = m.size - 11 + (i % 3);
+    const b = Math.floor(i / 3);
+    m.cells[b][a] = bit; // top right: 6 rows x 3 columns
+    m.cells[a][b] = bit; // bottom left, 3 rows x 6 columns
+  }
 }
 
 /** The spec's penalty score, used to choose the mask that reads best. */
@@ -297,6 +326,28 @@ function penalty(m) {
     }
   }
 
+  /*
+   * Anything that looks like a finder pattern (dark-light-dark x3-light-dark,
+   * with four light modules on one side) costs 40. Without this rule a mask
+   * can draw fake finders into the data, and a scanner locks onto those
+   * instead of the real corners. The quiet zone outside the symbol is light.
+   */
+  const FINDER = [1, 0, 1, 1, 1, 0, 1];
+  const at = (line, a, b) => {
+    if (b < 0 || b >= n) return 0;
+    return line ? m.cells[a][b] : m.cells[b][a];
+  };
+  for (const line of [true, false]) {
+    for (let a = 0; a < n; a += 1) {
+      for (let b = -4; b < n; b += 1) {
+        if (!FINDER.every((bit, k) => at(line, a, b + k) === bit)) continue;
+        const lightBefore = [1, 2, 3, 4].every((k) => at(line, a, b - k) === 0);
+        const lightAfter = [7, 8, 9, 10].every((k) => at(line, a, b + k) === 0);
+        if (lightBefore || lightAfter) score += 40;
+      }
+    }
+  }
+
   let dark = 0;
   for (let r = 0; r < n; r += 1) for (let c = 0; c < n; c += 1) dark += m.cells[r][c];
   const pct = (dark * 100) / (n * n);
@@ -323,6 +374,7 @@ export function qrMatrix(text) {
     placeAlignment(m, version);
     placeTiming(m);
     reserveFormat(m);
+    placeVersion(m, version);
     placeData(m, codewords, mask);
     placeFormat(m, mask);
     const score = penalty(m);

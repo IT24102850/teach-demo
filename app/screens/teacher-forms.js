@@ -9,7 +9,7 @@
  */
 
 import { api } from '../api.js';
-import { t } from '../i18n.js';
+import { LANGS, t } from '../i18n.js';
 import * as R from '../rules.js';
 import {
   S,
@@ -25,6 +25,7 @@ import {
   teacherName,
 } from '../state.js';
 import { celebration } from './income.js';
+import { ACCOUNT_ACTIONS, accountButtons } from './account.js';
 import {
   actionButton,
   bubble,
@@ -844,7 +845,7 @@ function stopUndoTimer() {
  * is already sent; without it the server hands back a wa.me link and the
  * teacher taps once to send it from their own WhatsApp.
  */
-function showSendResult(result, { sentMessage } = {}) {
+export function showSendResult(result, { sentMessage } = {}) {
   if (result?.status === 'sent') {
     closeSheet();
     toast(sentMessage || t('reminder_sent', { name: '' }).trim());
@@ -868,7 +869,7 @@ function showSendResult(result, { sentMessage } = {}) {
 
 /* ------------------------------------------------------------ plumbing --- */
 
-async function reload(ctx, { quiet = false } = {}) {
+export async function reload(ctx, { quiet = false } = {}) {
   if (!quiet) S.busy = true;
   try {
     S.data = await api.teacherBootstrap();
@@ -897,7 +898,31 @@ function scheduledStart(cls, date) {
   return new Date(y, mo - 1, d, h, m, 0, 0).toISOString();
 }
 
+/**
+ * The invite a parent uses to make their own account: six digits, once, for
+ * a week. Shown here once, because only its hash is kept - if the WhatsApp
+ * message goes astray the teacher can read it out, or simply send another.
+ */
+function inviteSheet(student, result) {
+  openSheet(`
+    ${sheetTitle(t('app_invite'))}
+    ${muted(student?.name || '')}
+    <div class="code-big">${esc(result.code)}</div>
+    ${muted(t('invite_teacher_note', { days: result.days || 7 }))}
+    ${
+      result.status === 'sent'
+        ? `<p class="fld-note ok">✓✓ ${esc(t('invite_sent_wa'))}</p>`
+        : result.link
+          ? `<a class="btn wide mt" href="${esc(result.link)}" target="_blank" rel="noopener">${esc(t('send_on_whatsapp'))}</a>`
+          : ''
+    }
+    ${button(t('done'), { act: 'sheet.close', cls: 'o wide' })}
+  `);
+}
+
 export const ACTIONS = {
+  ...ACCOUNT_ACTIONS,
+
   /* ---- navigation ---- */
   'nav.tab': (tab, _el, ctx) => {
     goTab(tab);
@@ -1603,33 +1628,18 @@ export const ACTIONS = {
     try {
       const result = await api.teacherDo('student.confirm', { student_id: id, fee_per_class: fee });
       await reload(ctx);
-      if (result.code) {
-        openSheet(`
-          ${sheetTitle(t('family_code'))}
-          <div class="code-big">${esc(result.code)}</div>
-          ${muted(t('code_once'))}
-          ${result.link ? `<a class="btn wide mt" href="${esc(result.link)}" target="_blank" rel="noopener">${esc(t('send_on_whatsapp'))}</a>` : ''}
-          ${button(t('done'), { act: 'sheet.close', cls: 'o wide' })}
-        `);
-      } else {
-        toast(t('saved'));
-      }
+      if (result.code) inviteSheet(studentById(id), result);
+      else toast(t('saved'));
     } catch (err) {
       toast(err.message, 'bad');
     }
   },
-  'student.newcode': async (id, _el, ctx) => {
+  /** A fresh invite: for a first sign-in, or a parent who lost their password. */
+  'student.invite': async (id, _el, ctx) => {
     try {
-      const student = studentById(id);
-      const result = await api.teacherDo('student.newcode', { student_id: id });
-      await reload(ctx);
-      openSheet(`
-        ${sheetTitle(t('family_code'))}
-        <div class="code-big">${esc(result.code)}</div>
-        ${muted(`${student?.name || ''} — ${t('code_once')}`)}
-        ${result.link ? `<a class="btn wide mt" href="${esc(result.link)}" target="_blank" rel="noopener">${esc(t('send_on_whatsapp'))}</a>` : ''}
-        ${button(t('done'), { act: 'sheet.close', cls: 'o wide' })}
-      `);
+      const result = await api.teacherDo('student.invite', { student_id: id });
+      await reload(ctx, { quiet: true });
+      inviteSheet(studentById(id), result);
     } catch (err) {
       toast(err.message, 'bad');
     }
@@ -1962,7 +1972,7 @@ export const ACTIONS = {
   'plus.inviteclass': async (classId, _el, ctx) => {
     try {
       const invite = await api.plusInvite(classId);
-      goSub('plusinvite', { invite, lang: S.lang === 'ta' ? 'ta' : 'en' });
+      goSub('plusinvite', { invite, lang: S.lang });
       ctx.render();
     } catch (err) {
       toast(err.message, 'bad');
@@ -2075,10 +2085,7 @@ function settingsSheet() {
     )}
     ${label(t('language'))}
     ${segmented(
-      [
-        { value: 'en', label: 'English' },
-        { value: 'ta', label: 'தமிழ்' },
-      ],
+      LANGS.map((l) => ({ value: l.code, label: l.label })),
       S.lang,
       'settings.lang',
     )}
@@ -2107,6 +2114,7 @@ function settingsSheet() {
          )
          .join('')}</div>`,
     )}
+    ${accountButtons()}
     ${button(t('done'), { act: 'sheet.close', cls: 'wide mt' })}
     ${button(t('log_out'), { act: 'auth.logout', cls: 'o wide' })}
   `);

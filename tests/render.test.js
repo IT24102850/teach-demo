@@ -690,6 +690,23 @@ test('Student detail shows fees, marks, classes and the actions', () => {
   assert.match(html, /data-a="mark.add"/);
 });
 
+test('Review with AI appears only when the server has a key', () => {
+  asTeacher({ sub: { view: 'student', id: 's1' } });
+  assert.ok(!teacher.studentDetail().includes('review.open'), 'hidden without a key');
+  S.data.ai_review = true;
+  assert.match(teacher.studentDetail(), /data-a="review.open"/);
+});
+
+test('the Review with AI screen asks for photos, then shows the suggestion', () => {
+  asTeacher({ sub: { view: 'review', id: 's1' } });
+  S.data.ai_review = true;
+  const form = check('review form', teacher.SUBS.review());
+  assert.match(form, /data-a="review.pick" data-i="pages"/);
+  assert.match(form, /data-a="review.pick" data-i="scheme"/);
+  assert.match(form, /id="rv-title"/);
+  assert.match(form, /data-a="review.run"/);
+});
+
 test('a pending student shows the fee box, not the fee balance', () => {
   asTeacher({ sub: { view: 'student', id: 's4' } });
   const html = check('studentDetail pending', teacher.studentDetail());
@@ -907,55 +924,51 @@ test('empty states render instead of blank screens', () => {
 
 /* ============================================================== login === */
 
-test('the login screen renders the roles and the PIN pad', () => {
+test('the sign-in screens: teacher, parent and student each have their own', () => {
   S.role = null;
   S.lang = 'en';
   setLang('en');
-  S.codeLength = 4;
-  S.demoHint = false;
+  const noop = { render() {} };
   const roles = check('rolePicker', login.view());
-  assert.match(roles, /Who are you\?/);
-  assert.match(roles, /data-a="login.role" data-i="teacher"/);
-  assert.match(roles, /data-a="login.role" data-i="parent"/);
-  assert.match(roles, /data-a="login.role" data-i="student"/);
+  assert.match(roles, /Who are you?/);
+  for (const role of ['teacher', 'parent', 'student']) {
+    assert.match(roles, new RegExp(`data-a="login.role" data-i="${role}"`));
+  }
 
-  /*
-   * A teacher now lands on email and password - that is the path for anyone
-   * new - and the keypad is one tap away for the accounts that only have a
-   * code. A family goes straight to the keypad.
-   */
-  login.ACTIONS['login.role']('teacher', null, { render() {} });
+  login.ACTIONS['login.role']('teacher', null, noop);
   const signIn = check('teacher sign in', login.view());
   assert.match(signIn, /Teacher sign in/);
   assert.match(signIn, /id="si-email"/);
-  assert.match(signIn, /id="si-pass"/);
   assert.match(signIn, /type="password"/, 'the password is not shown as it is typed');
-  assert.match(signIn, /data-a="login.tosignup"/);
-  assert.match(signIn, /data-a="login.tocode"/);
+  assert.match(signIn, /data-a="login.toforgot"/);
 
-  login.ACTIONS['login.tosignup'](null, null, { render() {} });
+  login.ACTIONS['login.tosignup'](null, null, noop);
   const signUp = check('teacher sign up', login.view());
   assert.match(signUp, /Create an account/);
-  assert.match(signUp, /id="su-name"/);
-  assert.match(signUp, /id="su-email"/);
   assert.match(signUp, /id="su-phone"/);
   assert.match(signUp, /At least 8 characters/);
   assert.match(signUp, /data-a="login.subject" data-i="Maths"/);
-  assert.match(signUp, /data-a="login.tosignin"/);
 
-  login.ACTIONS['login.tocode'](null, null, { render() {} });
-  const pad = check('pinPad', login.view());
-  assert.match(pad, /Enter your code/);
-  assert.equal((pad.match(/data-a="login.key"/g) || []).length, 11, '0-9 plus delete');
-  assert.equal((pad.match(/<i class=""><\/i>/g) || []).length, 4, 'four empty dots');
+  login.ACTIONS['login.toforgot'](null, null, noop);
+  assert.match(check('forgot', login.view()), /id="fg-email"/);
 
-  // A family never sees the email form at all.
-  login.ACTIONS['login.unrole'](null, null, { render() {} });
-  login.ACTIONS['login.role']('parent', null, { render() {} });
-  const family = login.view();
-  assert.match(family, /Enter your code/);
-  assert.doesNotMatch(family, /id="si-email"/, 'no email path for a family');
-  login.ACTIONS['login.unrole'](null, null, { render() {} });
+  login.ACTIONS['login.unrole'](null, null, noop);
+  login.ACTIONS['login.role']('parent', null, noop);
+  const parent = check('parent sign in', login.view());
+  assert.match(parent, /id="pi-phone"/);
+  assert.doesNotMatch(parent, /id="si-email"/, 'no email path for a family');
+  login.ACTIONS['login.toinvite'](null, null, noop);
+  assert.match(check('parent invite', login.view()), /id="iv-code"/);
+
+  login.ACTIONS['login.unrole'](null, null, noop);
+  login.ACTIONS['login.role']('student', null, noop);
+  assert.match(check('student sign in', login.view()), /id="st-user"/);
+
+  login.startReset('tok');
+  const reset = check('reset', login.view());
+  assert.match(reset, /Choose a new password/);
+  assert.match(reset, /id="rs-again"/);
+  login.ACTIONS['login.unrole'](null, null, noop);
 });
 
 /* ============================================================== Tamil === */

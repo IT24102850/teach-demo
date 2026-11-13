@@ -24,6 +24,7 @@ const SCREEN_FILES = [
   'app/screens/teacher-forms.js',
   'app/screens/family.js',
   'app/screens/income.js',
+  'app/screens/review.js',
   'app/join.js',
   'app/onboard.js',
   'app/fonts.js',

@@ -7,9 +7,10 @@
  */
 
 import { api } from '../api.js';
-import { t } from '../i18n.js';
+import { LANGS, t } from '../i18n.js';
 import * as R from '../rules.js';
 import { S, applyTheme, savePrefs } from '../state.js';
+import { ACCOUNT_ACTIONS, accountButtons } from './account.js';
 import {
   avatar,
   backButton,
@@ -146,9 +147,12 @@ function feesCard({ compact = false } = {}) {
           }`,
         );
   }
+  // Paying is the parent's job; the server refuses a student's slip anyway.
   const action = c.slip_sent
     ? `<p class="mu mt-s">${esc(t('slip_waiting'))}</p>`
-    : button(compact ? t('pay_amount', { amount: R.money(due) }) : t('pay_now'), {
+    : S.role !== 'parent'
+      ? ''
+      : button(compact ? t('pay_amount', { amount: R.money(due) }) : t('pay_now'), {
         act: 'family.slip',
         cls: 'wide mt-s',
       });
@@ -427,6 +431,8 @@ async function reload(ctx, childId) {
 }
 
 export const ACTIONS = {
+  ...ACCOUNT_ACTIONS,
+
   'nav.tab': (tab, _el, ctx) => {
     S.tab = tab;
     S.sub = null;
@@ -454,32 +460,13 @@ export const ACTIONS = {
           ),
         )
         .join('')}
-      ${label(t('switch_role'))}
-      ${segmented(
-        [
-          { value: 'parent', label: t('parent') },
-          { value: 'student', label: t('student') },
-        ],
-        S.role,
-        'family.role',
-      )}
       ${button(t('done'), { act: 'sheet.close', cls: 'o wide mt' })}
     `);
   },
 
   'family.child': async (id, _el, ctx) => {
     closeSheet();
-    await api.familyDo('child', { child_id: id });
     await reload(ctx, id);
-  },
-
-  'family.role': async (role, _el, ctx) => {
-    closeSheet();
-    const session = await api.switchRole(role);
-    S.role = session.role;
-    S.tab = 'home';
-    S.sub = null;
-    await reload(ctx);
   },
 
   'family.settings': () => {
@@ -487,10 +474,7 @@ export const ACTIONS = {
       ${sheetTitle(t('settings'))}
       ${label(t('language'))}
       ${segmented(
-        [
-          { value: 'en', label: 'English' },
-          { value: 'ta', label: 'தமிழ்' },
-        ],
+        LANGS.map((l) => ({ value: l.code, label: l.label })),
         S.lang,
         'family.lang',
       )}
@@ -505,15 +489,7 @@ export const ACTIONS = {
         'family.theme',
       )}
       ${(S.children || []).length > 1 ? button(t('switch_child'), { act: 'family.switch', cls: 'o wide' }) : ''}
-      ${label(t('switch_role'))}
-      ${segmented(
-        [
-          { value: 'parent', label: t('parent') },
-          { value: 'student', label: t('student') },
-        ],
-        S.role,
-        'family.role',
-      )}
+      ${accountButtons()}
       ${button(t('done'), { act: 'sheet.close', cls: 'wide mt' })}
       ${button(t('log_out'), { act: 'auth.logout', cls: 'o wide' })}
     `);

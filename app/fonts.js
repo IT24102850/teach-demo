@@ -13,7 +13,7 @@
 
 const HREF =
   'https://fonts.googleapis.com/css2?family=Anton&family=Manrope:wght@500;700;800' +
-  '&family=Noto+Sans+Tamil:wght@500;700;800&display=swap';
+  '&family=Noto+Sans+Sinhala:wght@500;700;800&family=Noto+Sans+Tamil:wght@500;700;800&display=swap';
 
 export function loadFonts() {
   if (document.querySelector('link[data-fonts]')) return;

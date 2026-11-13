@@ -6,10 +6,10 @@
    =========================================================================== */
 
 :root {
-  --bg: #000000;
-  --card: rgba(16, 19, 21, 0.74);
-  --card-solid: #101315;
-  --card2: #1d2326;
+  --bg: #05090a;
+  --card: rgba(13, 21, 23, 0.72);
+  --card-solid: #0e1618;
+  --card2: #182226;
   --tx: #f1f8f8;
   --mu: #8e9a9c;
   --teal: #00c2cb;
@@ -19,9 +19,17 @@
   --pink: #ff4d94;
   --pt: #ff4d94;
   --ink: #04191b;
-  --line: rgba(255, 255, 255, 0.09);
+  --line: rgba(160, 235, 240, 0.1);
   --glow-1: rgba(0, 194, 203, 0.32);
   --glow-2: rgba(0, 194, 203, 0.16);
+  --shadow: none;
+
+  /* The backdrop: deep teal into charcoal, cyan circuit traces, soft nodes. */
+  --bd-base: linear-gradient(168deg, #08262a 0%, #0a1719 34%, #070b0c 68%, #030505 100%);
+  --bd-trace: rgba(64, 232, 242, 0.42);
+  --bd-trace-glow: drop-shadow(0 0 2.5px rgba(0, 229, 240, 0.85)) drop-shadow(0 0 9px rgba(0, 194, 203, 0.45));
+  --bd-node: rgba(0, 220, 230, 0.55);
+  --bd-node-soft: rgba(0, 194, 203, 0.16);
 
   --r-card: 22px;
   --r-btn: 23px;
@@ -46,21 +54,31 @@
   --safe-b: env(safe-area-inset-bottom, 0px);
 }
 
+/* Day is not night with the lights on: white cards that lift off a cool,
+   faintly teal page, darker text for daylight, and the circuit drawn in ink
+   rather than light. Every colour pairing here clears WCAG AA. */
 :root[data-mode='day'] {
-  --bg: #ffffff;
-  --card: #f4f7f8;
-  --card-solid: #f4f7f8;
-  --card2: #e6eced;
-  --tx: #0b0b0c;
-  --mu: #667679;
-  --tt: #007a80;
+  --bg: #eef4f5;
+  --card: rgba(255, 255, 255, 0.86);
+  --card-solid: #ffffff;
+  --card2: #e3edee;
+  --tx: #0c1a1c;
+  --mu: #566b6f;
+  --tt: #00747a;
   --green: #1fd16f;
   --gt: #0a7f43;
   --pink: #ff4d94;
   --pt: #c4165f;
-  --line: rgba(0, 0, 0, 0.1);
-  --glow-1: rgba(0, 194, 203, 0.14);
-  --glow-2: rgba(0, 194, 203, 0.07);
+  --line: rgba(12, 52, 58, 0.11);
+  --glow-1: rgba(0, 194, 203, 0.16);
+  --glow-2: rgba(0, 194, 203, 0.08);
+  --shadow: 0 1px 2px rgba(12, 52, 58, 0.06), 0 6px 18px rgba(12, 52, 58, 0.07);
+
+  --bd-base: linear-gradient(168deg, #e2f2f3 0%, #eef5f6 40%, #f6f9f9 72%, #edf3f4 100%);
+  --bd-trace: rgba(0, 122, 128, 0.16);
+  --bd-trace-glow: none;
+  --bd-node: rgba(0, 150, 158, 0.3);
+  --bd-node-soft: rgba(0, 194, 203, 0.09);
 }
 
 * {
@@ -97,10 +115,12 @@ body {
 }
 
 :root[data-mode='day'] body {
-  background: #eef2f3;
+  background: #dfe8ea;
 }
 
-/* Tamil is wider and does not suit uppercase or letter spacing (section 8.4). */
+/* Tamil and Sinhala are wider than Latin and do not suit uppercase or letter
+   spacing (section 8.4). Anton has no glyphs for either, so headings switch
+   to the script's own font instead of falling back to a mismatched system one. */
 :root[data-lang='ta'] body,
 :root[data-lang='ta'] h1,
 :root[data-lang='ta'] .big,
@@ -110,6 +130,49 @@ body {
   font-family: 'Noto Sans Tamil', Manrope, sans-serif;
   text-transform: none;
   letter-spacing: 0;
+}
+/* Manrope first: it has no Sinhala, so the browser takes each Sinhala letter
+   from Noto and keeps names, numbers and "Grade 10 Maths" in Manrope. */
+:root[data-lang='si'] body,
+:root[data-lang='si'] h1,
+:root[data-lang='si'] .big,
+:root[data-lang='si'] .lbl,
+:root[data-lang='si'] .btn,
+:root[data-lang='si'] #nav button,
+:root[data-lang='si'] .sheet-h,
+:root[data-lang='si'] .cal-h {
+  font-family: Manrope, 'Noto Sans Sinhala', sans-serif;
+  text-transform: none;
+  letter-spacing: 0;
+}
+:root[data-lang='ta'] .sheet-h,
+:root[data-lang='ta'] .cal-h {
+  font-family: 'Noto Sans Tamil', Manrope, sans-serif;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* The language picker on the sign-in screens: three scripts, one row. */
+.lang-pick {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+}
+.lang-pick button {
+  border: 0;
+  background: none;
+  color: var(--mu);
+  border-radius: 999px;
+  padding: 7px 11px;
+  font: 700 13px/1 Manrope, 'Noto Sans Sinhala', 'Noto Sans Tamil', sans-serif;
+  cursor: pointer;
+}
+.lang-pick button.on {
+  background: var(--teal);
+  color: var(--ink);
 }
 
 .skip {
@@ -149,15 +212,62 @@ body {
   }
 }
 
+/*
+ * The backdrop, in three layers behind every screen:
+ *
+ *   ::before  the teal-to-charcoal gradient, two soft glows, and the bokeh
+ *             nodes - blurred dots, each a radial gradient, no images.
+ *   ::after   the circuit traces. assets/circuit.svg is a mask, so its colour
+ *             (and the glow) comes from the theme: cyan light at night, faint
+ *             ink by day. One 2 KB file serves both.
+ *
+ * The glow breathes slowly; prefers-reduced-motion stops it (see above).
+ */
 .phone::before {
   content: '';
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 86% 6%, var(--glow-1), transparent 42%),
-    radial-gradient(circle at 4% 54%, var(--glow-2), transparent 46%);
+    radial-gradient(circle at 71% 21%, var(--bd-node) 0 1.4px, transparent 2.8px),
+    radial-gradient(circle at 17% 47%, var(--bd-node) 0 1.2px, transparent 2.6px),
+    radial-gradient(circle at 86% 71%, var(--bd-node) 0 1.4px, transparent 2.8px),
+    radial-gradient(circle at 31% 64%, var(--bd-node) 0 1px, transparent 2.4px),
+    radial-gradient(circle at 57% 11%, var(--bd-node) 0 1.2px, transparent 2.6px),
+    radial-gradient(circle at 45% 88%, var(--bd-node) 0 1px, transparent 2.4px),
+    radial-gradient(circle at 88% 14%, var(--bd-node-soft) 0, transparent 26px),
+    radial-gradient(circle at 12% 30%, var(--bd-node-soft) 0, transparent 18px),
+    radial-gradient(circle at 78% 62%, var(--bd-node-soft) 0, transparent 34px),
+    radial-gradient(circle at 22% 84%, var(--bd-node-soft) 0, transparent 22px),
+    radial-gradient(circle at 64% 92%, var(--bd-node-soft) 0, transparent 14px),
+    radial-gradient(circle at 36% 8%, var(--bd-node-soft) 0, transparent 12px),
+    radial-gradient(circle at 92% 44%, var(--bd-node-soft) 0, transparent 10px),
+    radial-gradient(ellipse at 86% 4%, var(--glow-1), transparent 46%),
+    radial-gradient(ellipse at 0% 58%, var(--glow-2), transparent 50%),
+    radial-gradient(ellipse at 100% 100%, var(--glow-2), transparent 44%),
+    var(--bd-base);
   pointer-events: none;
   z-index: 0;
+}
+.phone::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--bd-trace);
+  -webkit-mask: url('/assets/circuit.svg') center / cover no-repeat;
+  mask: url('/assets/circuit.svg') center / cover no-repeat;
+  filter: var(--bd-trace-glow);
+  pointer-events: none;
+  z-index: 0;
+  animation: trace-breathe 7s ease-in-out infinite;
+}
+@keyframes trace-breathe {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 #scr,
@@ -299,6 +409,7 @@ h1.att-h {
   padding: var(--s4);
   margin: var(--s3) 0;
   backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
 }
 .card.tap {
   cursor: pointer;
@@ -403,10 +514,12 @@ h1.att-h {
   padding: 0 14px;
   font-size: 13px;
 }
+/* Frosted, not transparent: the circuit backdrop must never run through a label. */
 .btn.o {
-  background: transparent;
+  background: var(--card);
   color: var(--tx);
   border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
 }
 .btn.gh {
   background: var(--card2);
@@ -633,6 +746,93 @@ h1.att-h {
   height: 8px;
   border-radius: 3px;
   margin-right: 4px;
+}
+
+/* Review with AI: the photographed pages, and the question-by-question list. */
+.thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+.thumb {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--card2);
+  border: 1px solid var(--line);
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.thumb > span {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+.thumb-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.thumb.add {
+  display: grid;
+  place-content: center;
+  gap: 2px;
+  color: var(--tt);
+  font-size: 26px;
+  font-weight: 800;
+  cursor: pointer;
+  border-style: dashed;
+}
+.thumb.add span {
+  position: static;
+  background: none;
+  color: var(--mu);
+  font-size: 11px;
+  padding: 0;
+}
+.rv-q {
+  border-left: 4px solid var(--line);
+}
+.rv-q.correct {
+  border-left-color: var(--green);
+}
+.rv-q.partial {
+  border-left-color: var(--teal);
+}
+.rv-q.wrong {
+  border-left-color: var(--pink);
+}
+.rv-p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+.rv-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.rv-list li {
+  margin: 4px 0;
 }
 
 .slip {
@@ -975,10 +1175,17 @@ input[type='file'] {
   background: var(--ink);
 }
 
+/* The hour grid sits on a frosted panel, so the backdrop stays behind the
+   busiest screen in the app instead of running through it. */
 .tl {
   display: flex;
   gap: 6px;
   margin-top: 6px;
+  padding: 8px 6px 8px 4px;
+  border-radius: var(--r-card);
+  background: var(--card);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
 }
 .tl-hours {
   width: 40px;

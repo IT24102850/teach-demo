@@ -211,44 +211,35 @@ test('point 4: the app installs full screen', () => {
 });
 
 /* =========================================================================
-   Point 5 · the full-screen code entry
+   Point 5, as of migration 008: signing in, for real
    ========================================================================= */
 
-test('point 5: the keys are at least 72px and carry their letters', () => {
-  const pad = /\.pad\s*\{[^}]*\}/.exec(CSS);
-  assert.match(pad[0], /repeat\(3, 72px\)/, 'a 3-column grid of 72px keys');
-  assert.match(CSS, /\.pad button\s*\{[\s\S]*?height: 72px/);
+test('point 5: nobody signs in with a shared code any more', () => {
   const login = read('app/screens/login.js');
-  for (const letters of ['ABC', 'DEF', 'GHI', 'JKL', 'MNO', 'PQRS', 'TUV', 'WXYZ']) {
-    assert.match(login, new RegExp(`'${letters}'`), `the ${letters} key`);
+  assert.doesNotMatch(login, /login\.key|lockScreen|PQRS/, 'the family keypad is gone');
+  assert.doesNotMatch(login, /Demo codes|demoHint/, 'and no codes are printed on screen');
+  for (const screen of ['teacherSignIn', 'teacherForgot', 'teacherReset', 'parentSignIn', 'parentInvite', 'studentSignIn']) {
+    assert.ok(login.includes(`function ${screen}(`), screen);
   }
 });
 
-test('point 5: nothing else is on the screen', () => {
+test('point 5: passwords are typed twice where they are chosen, and never kept', () => {
   const login = read('app/screens/login.js');
-  const lock = login.slice(login.indexOf('function lockScreen'), login.indexOf('export const view'));
-  assert.match(lock, /class="lock"/);
-  assert.doesNotMatch(lock, /class="card/, 'no cards on a lock screen');
-  assert.doesNotMatch(lock, /logo\.png/, 'no logo either');
-  assert.match(lock, /lock-role/, 'the role label at the top');
-  assert.match(lock, /forgot_code/);
-  assert.match(lock, /cancel/);
-  // The bottom row and the keypad both stay clear of the notch and home bar.
-  assert.match(CSS, /\.lock\s*\{[\s\S]*?var\(--safe-t\)[\s\S]*?var\(--safe-b\)/);
+  assert.match(login, /'iv-again'/);
+  assert.match(login, /'rs-again'/);
+  assert.match(login, /passwords_differ/);
+  assert.ok(login.includes('L.form = {}'), 'everything typed is forgotten after the attempt');
+  assert.ok(login.includes("history.replaceState(null, '', '/')"), 'the reset token leaves the address bar');
 });
 
-test('point 5: the last digit checks the code, with no Enter button', () => {
-  const login = read('app/screens/login.js');
-  assert.match(login, /if \(L\.pin\.length === S\.codeLength\) await submit\(ctx\)/);
-  assert.doesNotMatch(login, /'enter'|Enter<\/button>/i);
-});
-
-test('point 5: five wrong codes cost 30 seconds, then longer', () => {
-  const login = read('app/screens/login.js');
-  assert.match(login, /const LOCK_AFTER = 5/);
-  assert.match(login, /30 \* 2 \*\* Math\.max\(0, strikes - LOCK_AFTER\)/);
-  assert.match(login, /navigator\.vibrate/, 'the phone buzzes where it may');
-  assert.match(login, /L\.shake = true/);
+test('point 5: sessions live on the server and can be ended', () => {
+  const lib = read('api/_lib/accounts.js');
+  assert.match(lib, /__Host-plus_sid/, 'a __Host- cookie in production');
+  assert.match(lib, /HttpOnly; SameSite=Lax/);
+  assert.ok(lib.includes("keyed('session', token)"), 'only a keyed hash of the token is stored');
+  assert.match(lib, /export async function revokeAllSessions/);
+  assert.match(read('supabase/migrations/008-accounts.sql'), /create table if not exists login_sessions/);
+  assert.match(read('supabase/migrations/008-accounts.sql'), /enable row level security/);
 });
 
 /* =========================================================================
@@ -1028,4 +1019,38 @@ test('Mr, Mrs, Dr go before the name; Sir and Madam after', () => {
     message('plusInvite', { teacher: SR.fullName({ name: 'Shehan Asher', title: 'Mr' }), class: '', link: 'L' }, 'en'),
     "Hi! Mr Shehan Asher's classes now use Plus. Join to see attendance, marks and class updates: L",
   );
+});
+
+/* =========================================================================
+   Three languages: English, Sinhala, Tamil
+   ========================================================================= */
+
+test('every key the app uses has a Sinhala and a Tamil translation', async () => {
+  const { missingTranslations, LANGS } = await import('../app/i18n.js');
+  assert.deepEqual(missingTranslations('si'), []);
+  assert.deepEqual(missingTranslations('ta'), []);
+  assert.deepEqual(LANGS.map((l) => l.code), ['en', 'si', 'ta']);
+});
+
+test('Sinhala dates do not depend on the browser having Sinhala data', () => {
+  assert.equal(CR.dateTitle('2026-11-13', 'si'), 'සිකුරාදා, නොවැම්බර් 13');
+  assert.equal(CR.monthTitle('2026-11-13', 'si'), '2026 නොවැම්බර්');
+  assert.equal(CR.dayShort(0, 'si'), 'සඳු');
+  assert.equal(CR.dayShort(6, 'si'), 'ඉරි');
+});
+
+test('every WhatsApp message exists in Sinhala, with nothing left in English', () => {
+  const v = { teacher: 'Mr Shehan Asher', student: 'Kasun', subject: 'Maths', class: 'Grade 10 Maths', time: '4:00 PM', classes: 3, amount: 4500, link: 'L', day: 'Tue', place: 'Nugegoda', from: 'Tue', to: 'Wed', receipt: '#0012', balance: 0, test: 'T1', score: 40, max: 50, present: 7, total: 8, percent: 88, avg: 76, code: '123456', lines: 'x', paper: 'P1' };
+  for (const key of ['invite', 'plusInvite', 'classReminder', 'absent', 'fee', 'feePlus', 'moved', 'paid', 'mark', 'report', 'code', 'timetable', 'paper']) {
+    const si = message(key, v, 'si');
+    assert.notEqual(si, message(key, v, 'en'), `${key} falls back to English`);
+    assert.match(si, /[\u0D80-\u0DFF]/, `${key} has Sinhala in it`);
+  }
+  assert.doesNotMatch(message('feePlus', v, 'si'), /gentle reminder/, 'the fee part is Sinhala too');
+});
+
+test('the backdrop is one circuit mask, tinted per theme', () => {
+  assert.match(CSS, /mask: url\('\/assets\/circuit\.svg'\)/);
+  assert.match(CSS, /--bd-trace:/);
+  assert.match(read('assets/circuit.svg'), /<svg/);
 });

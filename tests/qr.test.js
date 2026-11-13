@@ -16,7 +16,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { qrMatrix, qrSvg } from '../app/qr.js';
+import { qrMatrix, qrSvg, versionBits } from '../app/qr.js';
 
 /* ----------------------------------------------------------- a decoder --- */
 
@@ -81,6 +81,11 @@ function reserved(size, version) {
   for (let i = 0; i < 8; i += 1) {
     taken[8][size - 1 - i] = true;
     taken[size - 1 - i][8] = true;
+  }
+  // Version 7 and up: the two 6x3 version-information blocks.
+  if (version >= 7) {
+    block(0, size - 11, 6, 3);
+    block(size - 11, 0, 3, 6);
   }
   return taken;
 }
@@ -237,4 +242,74 @@ test('the SVG is self-contained, with a quiet zone', () => {
   // The quiet zone is four modules, so the viewBox is bigger than the matrix.
   const n = qrMatrix('https://plus.lk/j/nimal').length;
   assert.match(svg, new RegExp(`viewBox="0 0 ${n + 8} ${n + 8}"`));
+});
+
+/* ------------------------------------------------ version 7 and larger --- */
+
+// An authenticator link: long enough for a version 8 code.
+const OTPAUTH =
+  'otpauth://totp/Plus%20Admin%3Aowner%40hmtech.lk?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Plus%20Admin&algorithm=SHA1&digits=6&period=30';
+
+test('the version bits are the BCH code the standard tabulates', () => {
+  // ISO/IEC 18004 Annex D: version 7 is 0x07C94, version 10 is 0x0A4D3.
+  assert.equal(versionBits(7), 0x07c94);
+  assert.equal(versionBits(8), 0x085bc);
+  assert.equal(versionBits(10), 0x0a4d3);
+});
+
+test('a code of version 7 or more carries its version in both corners', () => {
+  const cells = qrMatrix(OTPAUTH);
+  const size = cells.length;
+  const version = (size - 17) / 4;
+  assert.ok(version >= 7, `expected a large code, got version ${version}`);
+  let topRight = 0;
+  let bottomLeft = 0;
+  for (let i = 17; i >= 0; i -= 1) {
+    const a = size - 11 + (i % 3);
+    const b = Math.floor(i / 3);
+    topRight = (topRight << 1) | cells[b][a];
+    bottomLeft = (bottomLeft << 1) | cells[a][b];
+  }
+  assert.equal(topRight, versionBits(version));
+  assert.equal(bottomLeft, versionBits(version));
+});
+
+test('an authenticator link reads back from its code', () => {
+  assert.equal(decode(qrMatrix(OTPAUTH)), OTPAUTH);
+});
+
+/* ------------------------------------- what the decoder above let slip --- */
+
+/*
+ * The decoder above reads only the first copy of the format bits and never
+ * checks the pad bytes, so these two bugs passed every test while OpenCV's
+ * scanner refused 3 of 4 real join links. They were caught by decoding the
+ * codes with an independent reader.
+ */
+
+test('the second copy of the format bits matches the first, where a scanner reads it', () => {
+  for (const link of [...LINKS, OTPAUTH]) {
+    const cells = qrMatrix(link);
+    const size = cells.length;
+    let first = 0;
+    for (let i = 0; i <= 5; i += 1) first |= cells[8][i] << (14 - i);
+    first |= (cells[8][7] << 8) | (cells[8][8] << 7) | (cells[7][8] << 6);
+    for (let i = 0; i <= 5; i += 1) first |= cells[i][8] << i;
+
+    // Bits 0-7 run along row 8 under the top-right finder, 8-14 down column 8.
+    let second = 0;
+    for (let i = 0; i <= 7; i += 1) second |= cells[8][size - 1 - i] << i;
+    for (let i = 8; i <= 14; i += 1) second |= cells[size - 15 + i][8] << i;
+    assert.equal(second, first, link);
+    assert.equal(cells[size - 8][8], 1, 'the dark module');
+  }
+});
+
+test('the pad bytes alternate 0xEC, 0x11 from the first one', () => {
+  const link = 'https://plus.lk/j/nimal'; // 23 bytes: the padding starts at an odd byte
+  const cells = qrMatrix(link);
+  const version = (cells.length - 17) / 4;
+  const data = deinterleave(readCodewords(cells, version, readMask(cells)), version);
+  const used = Math.ceil((4 + 8 + link.length * 8 + 4) / 8);
+  assert.deepEqual(data.slice(used, used + 3), [0xec, 0x11, 0xec]);
 });

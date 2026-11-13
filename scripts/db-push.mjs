@@ -3,6 +3,8 @@
  *
  *   node --env-file=.env scripts/db-push.mjs          # apply
  *   node --env-file=.env scripts/db-push.mjs --dry    # parse and report only
+ *   node --env-file=.env scripts/db-push.mjs --file supabase/migrations/007-admin.sql
+ *                                                     # one migration, not the whole schema
  *
  * DATABASE_URL comes from the Supabase dashboard: Connect -> Session pooler
  * (the IPv4 one; the direct db.<ref>.supabase.co host is IPv6-only, which many
@@ -13,12 +15,17 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connect, PgError } from './pg.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DRY = process.argv.includes('--dry');
+const FILE_AT = process.argv.indexOf('--file');
+const FILE = FILE_AT > 0 && process.argv[FILE_AT + 1]
+  ? join(ROOT, process.argv[FILE_AT + 1])
+  : join(ROOT, 'supabase', 'schema.sql');
+const FILE_NAME = basename(FILE);
 
 export function parseDatabaseUrl(raw) {
   if (!raw || raw.startsWith('PASTE')) {
@@ -52,9 +59,9 @@ function showPosition(sql, position) {
 }
 
 async function main() {
-  const sql = readFileSync(join(ROOT, 'supabase', 'schema.sql'), 'utf8');
+  const sql = readFileSync(FILE, 'utf8');
   const statements = sql.split(/;\s*\n/).filter((s) => s.trim() && !/^\s*--/.test(s)).length;
-  console.log(`\nschema.sql: ${sql.length.toLocaleString()} characters, about ${statements} statements`);
+  console.log(`\n${FILE_NAME}: ${sql.length.toLocaleString()} characters, about ${statements} statements`);
 
   if (DRY) {
     console.log('--dry: nothing was sent.\n');
@@ -95,7 +102,7 @@ async function main() {
 
 main().catch((err) => {
   if (err instanceof PgError) {
-    const sql = readFileSync(join(ROOT, 'supabase', 'schema.sql'), 'utf8');
+    const sql = readFileSync(FILE, 'utf8');
     console.error(`\nThe database refused the schema:\n  ${err.describe()}${showPosition(sql, err.position)}`);
     console.error('\nNothing was changed - the whole file runs as one transaction.\n');
   } else {

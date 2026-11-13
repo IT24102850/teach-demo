@@ -1,5 +1,5 @@
 /**
- * Outgoing message wording (Appendix B), in English and Tamil.
+ * Outgoing message wording (Appendix B), in English, Tamil and Sinhala.
  * Keep every amount in LKR and always name the teacher.
  */
 
@@ -46,6 +46,10 @@ const EN = {
   report: (v) =>
     `Hi, here is ${v.student}'s progress: attended ${v.present} of ${v.total} classes (${v.percent} %), average mark ${v.avg} %. Fees pending: ${money(v.amount)}. Please message me if you have questions.`,
   code: (v) => `Welcome to ${v.teacher}'s classes. Your code to open the app is ${v.code}.`,
+  // Migration 008: the one-time code a parent uses to make their own account.
+  appInvite: (v) =>
+    `Hi, this is ${v.teacher}. ${v.student}'s Plus app is ready. Open ${v.link}, choose Parent, then "I have an invite code". ` +
+    `Enter this phone number and the code ${v.code}, and choose your own password. The code works once, for ${v.days} days.`,
   timetable: (v) => `Hi, this is ${v.teacher}. Here is this week's timetable:\n${v.lines}`,
   paper: (v) => `Hi, this is ${v.teacher}. Here is the paper "${v.paper}" for ${v.student}: ${v.link}`,
 };
@@ -78,27 +82,54 @@ const TA = {
   report: (v) =>
     `வணக்கம், ${v.student} அவர்களின் முன்னேற்றம்: ${v.total} வகுப்புகளில் ${v.present} வந்துள்ளார் (${v.percent} %), சராசரி மதிப்பெண் ${v.avg} %. செலுத்த வேண்டிய கட்டணம்: ${money(v.amount)}. கேள்விகள் இருந்தால் தெரிவிக்கவும்.`,
   code: (v) => `${v.teacher} அவர்களின் வகுப்புகளுக்கு வருக. செயலியைத் திறக்க உங்கள் குறியீடு ${v.code}.`,
+  appInvite: (v) =>
+    `வணக்கம், ${v.teacher} பேசுகிறேன். ${v.student} அவர்களின் Plus செயலி தயார். ${v.link} ஐத் திறந்து, பெற்றோர் என்பதைத் தேர்வு செய்து, "அழைப்புக் குறியீடு உள்ளது" என்பதைத் தட்டவும். ` +
+    `இந்த தொலைபேசி எண்ணையும் ${v.code} குறியீட்டையும் உள்ளிட்டு, உங்கள் சொந்த கடவுச்சொல்லைத் தேர்வு செய்யவும். குறியீடு ஒருமுறை, ${v.days} நாட்களுக்கு மட்டுமே வேலை செய்யும்.`,
   timetable: (v) => `வணக்கம், ${v.teacher} பேசுகிறேன். இந்த வாரத்தின் நேர அட்டவணை:\n${v.lines}`,
   paper: (v) => `வணக்கம், ${v.teacher} பேசுகிறேன். "${v.paper}" தாள் ${v.student} அவர்களுக்கு: ${v.link}`,
 };
 
 /*
- * Sinhala.
- *
- * The app itself is English and Tamil. The invite screen offers a third
- * language because the message goes to a parent who does not have the app
- * yet, and may never read it in either - so only the two outgoing messages
- * are translated here, not the whole dictionary. Anything else asked for in
- * Sinhala falls back to English rather than printing a key.
+ * Sinhala. Every message a parent can receive, so a teacher who works in
+ * Sinhala never sends half a message in English.
  */
 const SI = {
+  invite: (v) =>
+    `ආයුබෝවන්, මම ${v.teacher}. මගේ පන්තිවලට එක්වීමට මෙම කෙටි පෝරමය පුරවන්න: ${v.link}. විනාඩියක් පමණයි.`,
   plusInvite: (v) =>
-    `\u0d86\u0dba\u0dd4\u0db6\u0ddd\u0dc0\u0db1\u0dca! ${v.teacher}\u0d9c\u0dda ${v.class ? `${v.class} \u0db4\u0db1\u0dca\u0dad\u0dd2\u0dba` : '\u0db4\u0db1\u0dca\u0dad\u0dd2'} \u0daf\u0dd0\u0db1\u0dca Plus \u0db7\u0dcf\u0dc0\u0dd2\u0dad\u0dcf \u0d9a\u0dbb\u0dba\u0dd2. ` +
-    `\u0db4\u0dd0\u0db8\u0dd2\u0dab\u0dd3\u0db8, \u0dbd\u0d9a\u0dd4\u0dab\u0dd4 \u0dc3\u0dc4 \u0db4\u0db1\u0dca\u0dad\u0dd2 \u0dad\u0ddc\u0dbb\u0dad\u0dd4\u0dbb\u0dd4 \u0db6\u0dbd\u0db1\u0dca\u0db1 \u0d91\u0d9a\u0dca\u0dc0\u0db1\u0dca\u0db1: ${v.link}`,
+    `ආයුබෝවන්! ${v.teacher}ගේ ${v.class ? `${v.class} පන්තිය` : 'පන්ති'} දැන් Plus භාවිතා කරයි. ` +
+    `පැමිණීම, ලකුණු සහ පන්ති තොරතුරු බලන්න එක්වන්න: ${v.link}`,
+  classReminder: (v) =>
+    `මතක් කිරීම: ${v.student}ට ${v.day} ${v.time} ට ${v.place} හි ${v.subject} පන්තිය ඇත.`,
+  absent: (v) =>
+    `ආයුබෝවන්, මම ${v.teacher || 'ඔබේ ගුරුවරයා'}. ${v.student} අද ` +
+    `${v.class || `${v.subject} පන්තියට`}${v.time ? ` (${v.time})` : ''} පැමිණියේ නැත. ` +
+    `කිසියම් ගැටලුවක් ඇත්නම් කරුණාකර මට දන්වන්න. ස්තූතියි.`,
+  fee: (v) =>
+    `ආයුබෝවන්, මම ${v.teacher}. ${v.student}ගේ පන්ති ${v.classes} ක ගාස්තු (${money(v.amount)}) තවම ගෙවා නැති බව කාරුණිකව මතක් කරමි. බැංකු මාරුවකින් ගෙවා රිසිට්පත මෙහි එවිය හැක. ස්තූතියි!`,
   feePlus: (v) =>
-    `${EN.fee(v)}\n\n` +
-    `\u{1F4F1} ${v.student}\u0d9c\u0dda \u0db4\u0dd0\u0db8\u0dd2\u0dab\u0dd3\u0db8, \u0dbd\u0d9a\u0dd4\u0dab\u0dd4 \u0dc3\u0dc4 \u0db4\u0dca\u200d\u0dbb\u0d9c\u0dad\u0dd2\u0dba \u0daf\u0dd2\u0db1\u0db4\u0dad\u0dcf \u0db6\u0dbd\u0db1\u0dca\u0db1 \u0d94\u0db1\u0dda\u0daf? ` +
-    `Plus \u0dc0\u0dcf\u0dbb\u0dca\u0dad\u0dcf\u0dc0\u0d9a\u0dca \u0d9c\u0db1\u0dca\u0db1: ${v.link}`,
+    `${SI.fee(v)}
+
+` +
+    `📱 ${v.student}ගේ පැමිණීම, ලකුණු සහ ප්‍රගතිය දිනපතා බලන්න ඕනේද? ` +
+    `Plus වාර්තාවක් ගන්න: ${v.link}`,
+  moved: (v) =>
+    `ආයුබෝවන්, මම ${v.teacher}. ${v.student}ගේ ${v.class} ${v.from} සිට ${v.to} දක්වා වෙනස් කර ඇත. ` +
+    `කරුණාකර නව වේලාවට පැමිණෙන්න. ස්තූතියි.`,
+  paid: (v) =>
+    `${v.student} සඳහා ${money(v.amount)} ගෙවීම ලැබුණා` +
+    `${v.receipt ? ` (රිසිට්පත ${v.receipt})` : ''}.` +
+    `${Number(v.balance) > 0 ? ` තවම ගෙවිය යුතු: ${money(v.balance)}.` : ''} ස්තූතියි.`,
+  mark: (v) => `${v.student} ${v.test} හි ලකුණු ${v.score}/${v.max} ක් ලබා ගත්තා.`,
+  report: (v) =>
+    `ආයුබෝවන්, ${v.student}ගේ ප්‍රගතිය: පන්ති ${v.total} න් ${v.present} කට පැමිණියා (${v.percent} %), සාමාන්‍ය ලකුණු ${v.avg} %. ගෙවිය යුතු ගාස්තු: ${money(v.amount)}. ප්‍රශ්න ඇත්නම් මට පණිවිඩයක් එවන්න.`,
+  code: (v) => `${v.teacher}ගේ පන්තිවලට සාදරයෙන් පිළිගනිමු. යෙදුම විවෘත කිරීමට ඔබේ කේතය ${v.code}.`,
+  appInvite: (v) =>
+    `ආයුබෝවන්, මම ${v.teacher}. ${v.student}ගේ Plus යෙදුම සූදානම්. ${v.link} විවෘත කර, දෙමාපිය තෝරා, "මට ආරාධනා කේතයක් ඇත" ඔබන්න. ` +
+    `මෙම දුරකථන අංකය සහ ${v.code} කේතය ඇතුළත් කර, ඔබේම මුරපදයක් තෝරන්න. කේතය එක් වරක්, දින ${v.days} ක් සඳහා පමණක් ක්‍රියා කරයි.`,
+  timetable: (v) => `ආයුබෝවන්, මම ${v.teacher}. මෙම සතියේ කාලසටහන:
+${v.lines}`,
+  paper: (v) => `ආයුබෝවන්, මම ${v.teacher}. ${v.student} සඳහා "${v.paper}" ප්‍රශ්න පත්‍රය: ${v.link}`,
 };
 
 /** The languages the invite screen offers. */
@@ -108,7 +139,7 @@ export const INVITE_LANGS = [
   { code: 'si', label: '\u0dc3\u0dd2\u0d82\u0dc4\u0dbd' },
 ];
 
-/** Render one template. Falls back to English if a Tamil line is missing. */
+/** Render one template. Falls back to English if a line is missing in that language. */
 export function render(key, values, lang = 'en') {
   const fn =
     (lang === 'ta' && TA[key]) || (lang === 'si' && SI[key]) || EN[key];
