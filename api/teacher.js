@@ -9,8 +9,15 @@
 
 import * as db from './_lib/db.js';
 import { bad, guard, json, ok, query, readJson, resource } from './_lib/http.js';
-import { codeLookup, hashCode, randomCode } from './_lib/session.js';
-import { endSession, teacherSession } from './_lib/session.js';
+import {
+  INVITE_DAYS,
+  endLoginSession,
+  hashPassword,
+  inviteCode,
+  inviteLookup,
+  sameOrigin,
+  teacherFrom,
+} from './_lib/accounts.js';
 import { SUSPENDED_MESSAGE, teacherSuspended } from './_lib/active.js';
 import * as R from './_lib/rules.js';
 import { FEED, INVITE_LANGS, render } from './_lib/templates.js';
@@ -238,6 +245,68 @@ async function notifyParent({ tid, student, type, text, feedText, lang }) {
     delivery_error: result.error || null,
   });
   return { event, link: result.link || null, status: result.status, lang };
+}
+
+/**
+ * Migration 008: a one-time invite that lets the parent make their own
+ * account. Six digits, for INVITE_DAYS, from the parent's number only; only a
+ * hash is stored, so the teacher sees it once. Sending a new one retires any
+ * older invite for the same child that was never used.
+ *
+ * The code goes in the WhatsApp message and nowhere else - not in the
+ * parent's updates feed, which anyone holding the phone can scroll.
+ */
+async function sendAppInvite(req, { tid, student, tname, lang }) {
+  const phone = R.toLkMobile(student.parent_phone);
+  if (!phone) {
+    throw Object.assign(new Error("Add the parent's WhatsApp number first"), { status: 400 });
+  }
+
+  let code = null;
+  let lookup = null;
+  for (let attempt = 0; attempt < 20 && !code; attempt += 1) {
+    const candidate = inviteCode();
+    const clash = await db.selectOne('account_invites', { select: 'id', code_lookup: `eq.${inviteLookup(candidate)}` });
+    if (!clash) {
+      code = candidate;
+      lookup = inviteLookup(candidate);
+    }
+  }
+  if (!code) throw Object.assign(new Error('Could not make a free invite code. Try again.'), { status: 500 });
+
+  const now = new Date();
+  await db.update(
+    'account_invites',
+    { expires_at: now.toISOString() },
+    { student_id: `eq.${student.id}`, used_at: 'is.null', expires_at: `gt.${now.toISOString()}` },
+  );
+  await db.insert(
+    'account_invites',
+    {
+      teacher_id: tid,
+      student_id: student.id,
+      phone,
+      code_lookup: lookup,
+      code_hash: await hashPassword(code),
+      expires_at: new Date(now.getTime() + INVITE_DAYS * 864e5).toISOString(),
+    },
+    { returning: 'minimal' },
+  );
+
+  const base = (process.env.APP_URL || `https://${req.headers.host}`).replace(/\/+$/, '');
+  const result = await notifyParent({
+    tid,
+    student: { ...student, parent_phone: phone },
+    type: 'join',
+    text: render(
+      'appInvite',
+      { teacher: tname, student: student.call_name || student.name, link: base, code, days: INVITE_DAYS },
+      lang,
+    ),
+    feedText: 'An app invite was sent to your WhatsApp',
+    lang,
+  });
+  return { code, days: INVITE_DAYS, link: result.link, status: result.status };
 }
 
 /** An ISO timestamp, or null when the browser sent nothing usable. */
@@ -980,11 +1049,11 @@ async function handlePost(req, res, tid, r) {
     }
 
     /**
-     * Rule 7.7.3/7.7.4: set the fee, approve the student, make a family code
-     * that is not already in use and send it to the parent.
+     * Rule 7.7.3/7.7.4: set the fee, approve the student, and send the
+     * parent an app invite (migration 008) to make their own account.
      */
     case 'student.confirm': {
-      const student = await mustStudent(tid, body.student_id, 'id,name,parent_phone,status');
+      const student = await mustStudent(tid, body.student_id, 'id,name,call_name,parent_phone,status');
       const fee = Number(body.fee_per_class);
       if (!fee || fee <= 0) return bad(res, 'Enter a fee per class');
 
@@ -993,117 +1062,16 @@ async function handlePost(req, res, tid, r) {
         { fee_per_class: fee, status: 'active' },
         { id: `eq.${student.id}`, teacher_id: `eq.${tid}` },
       );
-
-      // Already has a code? Re-send it instead of making a second one.
-      const existing = await db.selectOne('family_children', {
-        select: 'account_id',
-        student_id: `eq.${student.id}`,
-      });
-
-      let code = null;
-      let accountId = existing?.account_id || null;
-
-      if (!accountId) {
-        for (let attempt = 0; attempt < 30 && !code; attempt += 1) {
-          const candidate = randomCode();
-          const lookup = codeLookup(candidate);
-          const [clashA, clashB] = await Promise.all([
-            db.selectOne('family_accounts', { select: 'id', code_lookup: `eq.${lookup}` }),
-            db.selectOne('teachers', { select: 'id', code_lookup: `eq.${lookup}` }),
-          ]);
-          if (!clashA && !clashB) code = candidate;
-        }
-        if (!code) return bad(res, 'Could not make a free code - increase CODE_LENGTH', 500);
-
-        const { hash, salt } = hashCode(code);
-        const [account] = await db.insert('family_accounts', {
-          teacher_id: tid,
-          label: `${student.name}'s family`,
-          phone: student.parent_phone,
-          code_lookup: codeLookup(code),
-          code_hash: hash,
-          code_salt: salt,
-        });
-        accountId = account.id;
-        await db.insert(
-          'family_children',
-          { account_id: accountId, student_id: student.id },
-          { onConflict: 'account_id,student_id', returning: 'minimal' },
-        );
-      }
-
-      const text = code
-        ? render('code', { teacher: tname, code }, lang)
-        : render('invite', { teacher: tname, link: body.app_url || '' }, lang);
-      const result = await notifyParent({
-        tid,
-        student,
-        type: 'join',
-        text,
-        feedText: code ? FEED.join({ code }) : 'Welcome!',
-        lang,
-      });
-
-      // The code is shown to the teacher once, so they can read it out if the
-      // WhatsApp message does not arrive. It is only ever stored hashed.
-      return ok(res, { code, link: result.link, status: result.status, had_code: !code });
+      return ok(res, await sendAppInvite(req, { tid, student, tname, lang }));
     }
 
     /**
-     * Replace a family's code. Because codes are stored hashed, a lost code
-     * cannot be read back - the teacher issues a new one and it is shown once.
+     * A fresh app invite: for a family that has not signed up yet, another
+     * parent's phone, or a parent who forgot their password.
      */
-    case 'student.newcode': {
-      const student = await mustStudent(tid, body.student_id, 'id,name,parent_phone');
-      let code = null;
-      for (let attempt = 0; attempt < 30 && !code; attempt += 1) {
-        const candidate = randomCode();
-        const lookup = codeLookup(candidate);
-        const [clashA, clashB] = await Promise.all([
-          db.selectOne('family_accounts', { select: 'id', code_lookup: `eq.${lookup}` }),
-          db.selectOne('teachers', { select: 'id', code_lookup: `eq.${lookup}` }),
-        ]);
-        if (!clashA && !clashB) code = candidate;
-      }
-      if (!code) return bad(res, 'Could not make a free code - increase CODE_LENGTH', 500);
-
-      const { hash, salt } = hashCode(code);
-      const existing = await db.selectOne('family_children', {
-        select: 'account_id',
-        student_id: `eq.${student.id}`,
-      });
-
-      if (existing) {
-        await db.update(
-          'family_accounts',
-          { code_lookup: codeLookup(code), code_hash: hash, code_salt: salt },
-          { id: `eq.${existing.account_id}`, teacher_id: `eq.${tid}` },
-        );
-      } else {
-        const [account] = await db.insert('family_accounts', {
-          teacher_id: tid,
-          label: `${student.name}'s family`,
-          phone: student.parent_phone,
-          code_lookup: codeLookup(code),
-          code_hash: hash,
-          code_salt: salt,
-        });
-        await db.insert(
-          'family_children',
-          { account_id: account.id, student_id: student.id },
-          { onConflict: 'account_id,student_id', returning: 'minimal' },
-        );
-      }
-
-      const result = await notifyParent({
-        tid,
-        student,
-        type: 'join',
-        text: render('code', { teacher: tname, code }, lang),
-        feedText: 'A new family code was sent',
-        lang,
-      });
-      return ok(res, { code, link: result.link, status: result.status });
+    case 'student.invite': {
+      const student = await mustStudent(tid, body.student_id, 'id,name,call_name,parent_phone,status');
+      return ok(res, await sendAppInvite(req, { tid, student, tname, lang }));
     }
 
     /* ---- money (point 11) ---- */
@@ -1493,7 +1461,7 @@ async function handlePost(req, res, tid, r) {
     /* ---- settings ---- */
     case 'settings.update': {
       const patch = {};
-      if (body.lang && ['en', 'ta'].includes(body.lang)) patch.lang = body.lang;
+      if (body.lang && ['en', 'si', 'ta'].includes(body.lang)) patch.lang = body.lang;
       if (body.theme && ['night', 'day', 'auto'].includes(body.theme)) patch.theme = body.theme;
       if (body.auto_reminders !== undefined) patch.auto_reminders = Boolean(body.auto_reminders);
       if (body.remind_after_days && [7, 14, 30].includes(Number(body.remind_after_days))) {
@@ -1531,14 +1499,15 @@ async function handlePost(req, res, tid, r) {
 }
 
 export default guard(async (req, res) => {
-  const session = teacherSession(req);
+  const session = await teacherFrom(req);
   if (!session) return bad(res, 'Please log in', 401);
   const tid = session.tid;
-  // The cookie outlives a pause by the owner; this is what makes a pause bite.
+  // A session outlives a pause by the owner; this is what makes a pause bite.
   if (await teacherSuspended(tid)) {
-    endSession(res);
+    await endLoginSession(req, res);
     return bad(res, SUSPENDED_MESSAGE, 403);
   }
+  if (req.method === 'POST' && !sameOrigin(req)) return bad(res, 'Cross-site request refused', 403);
   const r = resource(req);
 
   if (req.method === 'GET') {

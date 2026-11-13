@@ -800,9 +800,9 @@ export function studentDetail() {
              ${button(t('confirm_and_send'), { act: 'student.confirm', arg: s.id })}`,
           )
         : card(
-            `${label(t('family_code'))}
-             ${muted(t('code_hashed'))}
-             ${button(t('new_code'), { act: 'student.newcode', arg: s.id, cls: 'o' })}`,
+            `${label(t('app_access'))}
+             ${muted(t('app_access_blurb'))}
+             ${button(t('send_app_invite'), { act: 'student.invite', arg: s.id, cls: 'o' })}`,
           )
     }
 

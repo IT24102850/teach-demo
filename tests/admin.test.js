@@ -25,7 +25,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const sec = await import('../api/_lib/admin-security.js');
-const { hashCode, codeLookup, startSession } = await import('../api/_lib/session.js');
+const { hashCode, codeLookup } = await import('../api/_lib/session.js');
+const { startLoginSession, forgetSessions } = await import('../api/_lib/accounts.js');
 
 /* ========================================================= the stub ===== */
 
@@ -48,6 +49,7 @@ function reset() {
     admin_audit: [],
     login_attempts: [],
     family_accounts: [],
+    login_sessions: [],
     teachers: [
       {
         id: TEACHER,
@@ -552,7 +554,8 @@ test('a forged or altered cookie opens nothing', async () => {
 test('a teacher or family cookie is not an admin session', async () => {
   reset();
   const res = makeRes();
-  startSession(res, { kind: 'teacher', tid: TEACHER });
+  forgetSessions();
+  await startLoginSession({ headers: {} }, res, 'teacher', TEACHER);
   const teacherCookie = cookieOf(res);
   assert.equal((await admin('overview', { cookie: teacherCookie })).statusCode, 401);
 });
@@ -609,13 +612,14 @@ test('a paused teacher is turned away by the app and at sign-in', async () => {
   forgetTeacher();
   DB.teachers[0].suspended_at = new Date().toISOString();
   const res = makeRes();
-  startSession(res, { kind: 'teacher', tid: TEACHER });
+  forgetSessions();
+  await startLoginSession({ headers: {} }, res, 'teacher', TEACHER);
   const teacherCookie = cookieOf(res);
 
   const app = await call(teacherApi, { url: '/api/teacher?r=bootstrap', cookie: teacherCookie });
   assert.equal(app.statusCode, 403);
   assert.match(app.json.error, /paused/);
-  assert.match(app.getHeader('set-cookie'), /Max-Age=0/, 'and the cookie is cleared');
+  assert.match(String(app.getHeader('set-cookie')), /Max-Age=0/, 'and the cookie is cleared');
 
   const login = await call(authApi, { method: 'POST', url: '/api/auth?r=login', body: { role: 'teacher', code: '424242' } });
   assert.equal(login.statusCode, 403);

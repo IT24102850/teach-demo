@@ -24,16 +24,17 @@ import {
   userPrompt,
 } from './_lib/gemini.js';
 import { bad, guard, ok, readJson } from './_lib/http.js';
-import { endSession, teacherSession } from './_lib/session.js';
+import { endLoginSession, sameOrigin, teacherFrom } from './_lib/accounts.js';
 import { SUSPENDED_MESSAGE, teacherSuspended } from './_lib/active.js';
 
 export default guard(async (req, res) => {
-  const session = teacherSession(req);
+  const session = await teacherFrom(req);
   if (!session) return bad(res, 'Please log in', 401);
   if (await teacherSuspended(session.tid)) {
-    endSession(res);
+    await endLoginSession(req, res);
     return bad(res, SUSPENDED_MESSAGE, 403);
   }
+  if (!sameOrigin(req)) return bad(res, 'Cross-site request refused', 403);
   if (req.method !== 'POST') return bad(res, 'Use POST', 405);
   if (!configured()) return bad(res, 'AI review is not set up on the server.', 503);
 
@@ -71,7 +72,7 @@ export default guard(async (req, res) => {
   ]);
   if (!student) return bad(res, 'Student not found', 404);
 
-  const lang = ['en', 'ta'].includes(body.lang) ? body.lang : teacher?.lang || 'en';
+  const lang = ['en', 'si', 'ta'].includes(body.lang) ? body.lang : teacher?.lang || 'en';
   const prompt = userPrompt({
     subject: String(body.subject || student.subject || '').slice(0, 60),
     grade: student.grade,

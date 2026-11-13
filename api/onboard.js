@@ -42,7 +42,7 @@ const PLACES = {
   online: { venue_type: 'area', area: 'Online' },
 };
 
-const MEDIUM_LANG = { English: 'en', Tamil: 'ta', Sinhala: 'en' };
+const MEDIUM_LANG = { English: 'en', Tamil: 'ta', Sinhala: 'si' };
 
 /** A join key from the teacher's name, made unique if it is already taken. */
 async function freeJoinKey(name) {

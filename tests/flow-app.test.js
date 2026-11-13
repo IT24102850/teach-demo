@@ -153,9 +153,9 @@ installFetch({
   'GET /api/auth?r=config': { configured: true, code_length: 4, demo_hint: false },
   'GET /api/auth?r=me': {},
   'POST /api/auth?r=login': (body) =>
-    body.code === '1234'
+    body.email === 'nimal@example.com' && body.password === 'teach-well-2026'
       ? { role: 'teacher', teacher: TEACHER }
-      : { __status: 401, body: { error: 'That code did not work' } },
+      : { __status: 401, body: { error: 'That email and password did not work' } },
   'GET /api/teacher?r=bootstrap': () => bootstrap(),
 
   'POST /api/teacher?r=attendance.start': (body) => {
@@ -279,50 +279,67 @@ test('the app opens on the role picker', () => {
   assert.match(html, /data-a="login\.role" data-i="teacher"/);
 });
 
-test('a teacher lands on email and password, not the keypad', async () => {
+test('the sign-in screens offer English, Sinhala and Tamil', () => {
+  const html = screen();
+  assert.match(html, /data-a="lang\.set" data-i="si"/);
+  assert.match(html, /සිංහල/);
+  assert.match(html, /தமிழ்/);
+  assert.doesNotMatch(html, /Demo codes/, 'no sign-in codes printed for anyone to read');
+});
+
+test('a parent signs in with a phone and a password, or starts from an invite', async () => {
+  await dom.click('login.role', 'parent');
+  let html = screen();
+  assert.match(html, /Parent sign in/);
+  assert.match(html, /id="pi-phone"/);
+  assert.match(html, /id="pi-pass"/);
+  assert.match(html, /data-a="login\.toinvite"/, 'first time, another child, or a lost password');
+  assert.doesNotMatch(html, /class="pad"/, 'no shared family code any more');
+
+  await dom.click('login.toinvite');
+  html = screen();
+  assert.match(html, /id="iv-code"/);
+  assert.match(html, /id="iv-pass"/);
+  assert.match(html, /id="iv-again"/, 'the password is typed twice');
+  await dom.click('login.unrole');
+});
+
+test('a student signs in with the username their parent made', async () => {
+  await dom.click('login.role', 'student');
+  const html = screen();
+  assert.match(html, /Student sign in/);
+  assert.match(html, /id="st-user"/);
+  assert.match(html, /Ask your parent/);
+  await dom.click('login.unrole');
+});
+
+test('a teacher signs in with email and password, and can reset a lost one', async () => {
   await dom.click('login.role', 'teacher');
   const html = screen();
   assert.match(html, /Teacher sign in/);
   assert.match(html, /id="si-email"/);
-  assert.match(html, /data-a="login.tosignup"/, 'with a way to make an account');
-  assert.match(html, /data-a="login.tocode"/, 'and a way back to the keypad');
+  assert.match(html, /data-a="login\.tosignup"/, 'with a way to make an account');
+  assert.match(html, /data-a="login\.toforgot"/, 'and a way back in');
+  assert.match(html, /data-a="login\.tocode"/, 'and a login code, for a teacher the Plus team set up');
+  assert.doesNotMatch(html, /class="pad"/, 'as one field, not the old keypad');
 });
 
-test('point 5: the keypad is one tap away for a code-only account', async () => {
-  await dom.click('login.tocode');
+test('a wrong password says so above the boxes, and keeps the email', async () => {
+  dom.type('si-email', 'nimal@example.com');
+  dom.type('si-pass', 'wrong-password');
+  await dom.click('login.teacher');
   const html = screen();
-  assert.match(html, /class="lock"/);
-  assert.match(html, /class="lock-role">Teacher</);
-  assert.match(html, /Enter your code/);
-  assert.match(html, /class="pad"/);
-  assert.match(html, /PQRS/, 'the letters are under the digits');
-  assert.match(html, /Forgot code\?/);
-  assert.match(html, /data-a="login\.unrole"/, 'Cancel');
-  assert.doesNotMatch(html, /class="card/, 'nothing else is on the screen');
+  assert.match(html, /role="alert">That email and password did not work/);
+  assert.match(html, /value="nimal@example\.com"/, 'nothing typed is lost');
   assert.equal(dom.get('nav').innerHTML, '', 'no tab bar while signing in');
 });
 
-test('point 5: the dots fill as digits are pressed', async () => {
-  await dom.click('login.key', '1');
-  assert.match(screen(), /<i class="f"><\/i><i class=""><\/i><i class=""><\/i><i class=""><\/i>/);
-  await dom.click('login.key', '2');
-  assert.equal((screen().match(/class="f"/g) || []).length, 2);
-});
-
-test('point 5: a wrong code shakes the dots and clears them', async () => {
-  await dom.click('login.key', '9');
-  await dom.click('login.key', '9'); // 1299 is wrong, and the fourth digit checks
-  const html = screen();
-  assert.match(html, /class="pin shake"/);
-  assert.equal((html.match(/class="f"/g) || []).length, 0, 'the dots are cleared');
-  assert.equal(toast(), 'That code did not work');
-});
-
-test('point 5: the right code signs in, with no Enter button', async () => {
-  for (const key of ['1', '2', '3', '4']) await dom.click('login.key', key);
+test('the right password signs in', async () => {
+  dom.type('si-email', 'nimal@example.com');
+  dom.type('si-pass', 'teach-well-2026');
+  await dom.click('login.teacher');
   await new Promise((r) => setTimeout(r, 10));
   const html = screen();
-  assert.doesNotMatch(html, /class="lock"/, 'the lock screen is gone');
   assert.match(html, /Hi, Nimal/);
   assert.match(dom.get('nav').innerHTML, /data-a="nav\.tab" data-i="today"/);
 });

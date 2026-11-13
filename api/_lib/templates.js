@@ -46,6 +46,10 @@ const EN = {
   report: (v) =>
     `Hi, here is ${v.student}'s progress: attended ${v.present} of ${v.total} classes (${v.percent} %), average mark ${v.avg} %. Fees pending: ${money(v.amount)}. Please message me if you have questions.`,
   code: (v) => `Welcome to ${v.teacher}'s classes. Your code to open the app is ${v.code}.`,
+  // Migration 008: the one-time code a parent uses to make their own account.
+  appInvite: (v) =>
+    `Hi, this is ${v.teacher}. ${v.student}'s Plus app is ready. Open ${v.link}, choose Parent, then "I have an invite code". ` +
+    `Enter this phone number and the code ${v.code}, and choose your own password. The code works once, for ${v.days} days.`,
   timetable: (v) => `Hi, this is ${v.teacher}. Here is this week's timetable:\n${v.lines}`,
   paper: (v) => `Hi, this is ${v.teacher}. Here is the paper "${v.paper}" for ${v.student}: ${v.link}`,
 };
@@ -78,6 +82,9 @@ const TA = {
   report: (v) =>
     `வணக்கம், ${v.student} அவர்களின் முன்னேற்றம்: ${v.total} வகுப்புகளில் ${v.present} வந்துள்ளார் (${v.percent} %), சராசரி மதிப்பெண் ${v.avg} %. செலுத்த வேண்டிய கட்டணம்: ${money(v.amount)}. கேள்விகள் இருந்தால் தெரிவிக்கவும்.`,
   code: (v) => `${v.teacher} அவர்களின் வகுப்புகளுக்கு வருக. செயலியைத் திறக்க உங்கள் குறியீடு ${v.code}.`,
+  appInvite: (v) =>
+    `வணக்கம், ${v.teacher} பேசுகிறேன். ${v.student} அவர்களின் Plus செயலி தயார். ${v.link} ஐத் திறந்து, பெற்றோர் என்பதைத் தேர்வு செய்து, "அழைப்புக் குறியீடு உள்ளது" என்பதைத் தட்டவும். ` +
+    `இந்த தொலைபேசி எண்ணையும் ${v.code} குறியீட்டையும் உள்ளிட்டு, உங்கள் சொந்த கடவுச்சொல்லைத் தேர்வு செய்யவும். குறியீடு ஒருமுறை, ${v.days} நாட்களுக்கு மட்டுமே வேலை செய்யும்.`,
   timetable: (v) => `வணக்கம், ${v.teacher} பேசுகிறேன். இந்த வாரத்தின் நேர அட்டவணை:\n${v.lines}`,
   paper: (v) => `வணக்கம், ${v.teacher} பேசுகிறேன். "${v.paper}" தாள் ${v.student} அவர்களுக்கு: ${v.link}`,
 };
@@ -117,6 +124,9 @@ const SI = {
   report: (v) =>
     `ආයුබෝවන්, ${v.student}ගේ ප්‍රගතිය: පන්ති ${v.total} න් ${v.present} කට පැමිණියා (${v.percent} %), සාමාන්‍ය ලකුණු ${v.avg} %. ගෙවිය යුතු ගාස්තු: ${money(v.amount)}. ප්‍රශ්න ඇත්නම් මට පණිවිඩයක් එවන්න.`,
   code: (v) => `${v.teacher}ගේ පන්තිවලට සාදරයෙන් පිළිගනිමු. යෙදුම විවෘත කිරීමට ඔබේ කේතය ${v.code}.`,
+  appInvite: (v) =>
+    `ආයුබෝවන්, මම ${v.teacher}. ${v.student}ගේ Plus යෙදුම සූදානම්. ${v.link} විවෘත කර, දෙමාපිය තෝරා, "මට ආරාධනා කේතයක් ඇත" ඔබන්න. ` +
+    `මෙම දුරකථන අංකය සහ ${v.code} කේතය ඇතුළත් කර, ඔබේම මුරපදයක් තෝරන්න. කේතය එක් වරක්, දින ${v.days} ක් සඳහා පමණක් ක්‍රියා කරයි.`,
   timetable: (v) => `ආයුබෝවන්, මම ${v.teacher}. මෙම සතියේ කාලසටහන:
 ${v.lines}`,
   paper: (v) => `ආයුබෝවන්, මම ${v.teacher}. ${v.student} සඳහා "${v.paper}" ප්‍රශ්න පත්‍රය: ${v.link}`,

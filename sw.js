@@ -16,7 +16,7 @@
    that what is deployed is what runs. Images and icons, which do not change
    without changing name, stay cache first. */
 
-const SHELL = 'plus-shell-v4';
+const SHELL = 'plus-shell-v5';
 const FILES = [
   '/',
   '/index.html',
@@ -34,6 +34,7 @@ const FILES = [
   '/app/join-steps.js',
   '/app/onboard-steps.js',
   '/app/screens/login.js',
+  '/app/screens/account.js',
   '/app/screens/teacher.js',
   '/app/screens/teacher-forms.js',
   '/app/screens/family.js',
@@ -41,6 +42,7 @@ const FILES = [
   '/app/screens/review.js',
   '/app/qr.js',
   '/assets/logo.png',
+  '/assets/circuit.svg',
   '/assets/icon-192.png',
   '/assets/icon-512.png',
 ];

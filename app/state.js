@@ -16,7 +16,6 @@ export const S = {
   error: null,
   configured: true,
   codeLength: 4,
-  demoHint: false,
 
   /* who */
   role: null, // null | 'teacher' | 'parent' | 'student'

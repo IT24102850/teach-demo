@@ -171,7 +171,10 @@ async function reloadForRole() {
     S.teacher = S.data.teacher;
     indexMarks();
   } else if (S.role) {
-    S.data = await api.familyBootstrap();
+    // The child being looked at is a choice the server checks, not a cookie:
+    // it is sent with every load, and an id that is not this account's own
+    // simply falls back to the first child.
+    S.data = await api.familyBootstrap(S.childId);
     S.teacher = S.data.teacher;
     S.children = S.data.children;
     S.childId = S.data.child_id;
@@ -248,8 +251,17 @@ async function boot() {
     const config = await api.config();
     S.configured = config.configured;
     S.codeLength = config.code_length || 4;
-    S.demoHint = Boolean(config.demo_hint);
     if (!S.configured) {
+      S.loading = false;
+      render();
+      return;
+    }
+
+    // The emailed reset link: /?reset=<token>. It wins over any session on
+    // this phone - someone resetting a password wants the reset screen.
+    const token = new URLSearchParams(location.search).get('reset');
+    if (token) {
+      login.startReset(token);
       S.loading = false;
       render();
       return;

@@ -253,7 +253,7 @@ test('what the team said is kept, including the part the teacher never sees', as
 });
 
 test('the teaching medium picks the language the app opens in', async () => {
-  for (const [medium, lang] of [['English', 'en'], ['Tamil', 'ta'], ['Sinhala', 'en']]) {
+  for (const [medium, lang] of [['English', 'en'], ['Tamil', 'ta'], ['Sinhala', 'si']]) {
     reset();
     await call({
       method: 'POST',
