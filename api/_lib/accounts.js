@@ -169,7 +169,6 @@ export const inviteLookup = (code) => keyed('invite', String(code).replace(/\D/g
 const SESSION_DAYS = 30;
 const IDLE_DAYS = 14; // unused this long, a session ends even before 30 days
 const TOUCH_EVERY_MS = 10 * 60_000;
-const CACHE_MS = 30_000;
 
 const PROD = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
 /*
@@ -199,8 +198,12 @@ function setCookies(res, cookies) {
 const attrs = (maxAge) =>
   `Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${PROD ? '; Secure' : ''}`;
 
-/** Recently checked sessions, so a busy phone costs one query per 30 s. */
-const seen = new Map();
+/*
+ * No cache: every request asks the database whether its session is still
+ * live. It is one indexed lookup, and it means signing out, a password change
+ * or a reset ends a session everywhere at once - with a cache, a copied cookie
+ * kept working on another server for up to the cache's lifetime.
+ */
 
 /**
  * Start a session for `kind` ('teacher', 'parent', 'student') and `id`, and
@@ -239,9 +242,6 @@ export async function readLoginSession(req) {
   if (!token || token.length > 100) return null;
   const hash = tokenHash(token);
 
-  const hit = seen.get(hash);
-  if (hit && hit.until > Date.now()) return hit.session;
-
   const row = await db.selectOne('login_sessions', {
     select: 'id,subject_kind,subject_id,expires_at,last_seen_at,revoked_at',
     token_hash: `eq.${hash}`,
@@ -257,8 +257,6 @@ export async function readLoginSession(req) {
   if (alive && Date.parse(row.last_seen_at) < now - TOUCH_EVERY_MS) {
     db.update('login_sessions', { last_seen_at: new Date(now).toISOString() }, { id: `eq.${row.id}` }).catch(() => {});
   }
-  seen.set(hash, { session, until: now + CACHE_MS });
-  if (seen.size > 5000) seen.clear();
   return session;
 }
 
@@ -267,7 +265,6 @@ export async function endLoginSession(req, res) {
   const token = cookieValue(req, SESSION_COOKIE);
   if (token) {
     const hash = tokenHash(token);
-    seen.delete(hash);
     await db
       .update('login_sessions', { revoked_at: new Date().toISOString() }, { token_hash: `eq.${hash}` })
       .catch(() => {});
@@ -287,7 +284,6 @@ export async function revokeAllSessions(kind, id, keep = null) {
   const filter = { subject_kind: `eq.${kind}`, subject_id: `eq.${id}`, revoked_at: 'is.null' };
   if (keep) filter.id = `neq.${keep}`;
   await db.update('login_sessions', { revoked_at: new Date().toISOString() }, filter);
-  seen.clear();
 }
 
 /** The devices signed in to one account, newest first. */
@@ -333,5 +329,5 @@ export async function teacherFrom(req) {
   return session && session.kind === 'teacher' ? { tid: session.sub, sessionId: session.id } : null;
 }
 
-/** For tests: forget the cached sessions. */
-export const forgetSessions = () => seen.clear();
+/** Kept for the tests that call it: there is no session cache to forget. */
+export const forgetSessions = () => {};
